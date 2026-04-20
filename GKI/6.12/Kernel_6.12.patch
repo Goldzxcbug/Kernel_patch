@@ -1,0 +1,3822 @@
+diff --git a/include/linux/cgroup-defs.h b/include/linux/cgroup-defs.h
+--- a/include/linux/cgroup-defs.h
++++ b/include/linux/cgroup-defs.h
+@@ -26,6 +26,7 @@
+ #ifdef CONFIG_CGROUPS
+ 
+ struct cgroup;
++struct css_set;
+ struct cgroup_root;
+ struct cgroup_subsys;
+ struct cgroup_taskset;
+@@ -231,13 +232,22 @@
+  * list_add()/del() can bump the reference count on the entire cgroup
+  * set for a task.
+  */
++/* The last three subsystem slots are kept in ext to preserve old css_set ABI. */
++#define CGROUP_SUBSYS_EXT_SLOTS	4
++#define CGROUP_SUBSYS_MAIN_COUNT	(CGROUP_SUBSYS_COUNT - CGROUP_SUBSYS_EXT_SLOTS)
++
++struct css_set_ext {
++	struct css_set *owner;
++	struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_EXT_SLOTS];
++	struct list_head e_cset_node[CGROUP_SUBSYS_EXT_SLOTS];
++};
+ struct css_set {
+ 	/*
+ 	 * Set of subsystem states, one for each subsystem. This array is
+ 	 * immutable after creation apart from the init_css_set during
+ 	 * subsystem registration (at boot time).
+ 	 */
+-	struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
++	struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_MAIN_COUNT];
+ 
+ 	/* reference count */
+ 	refcount_t refcount;
+@@ -277,7 +287,7 @@
+ 	 * ->subsys[ssid]->cgroup->e_csets[ssid] and provides a way to
+ 	 * iterate through all css's attached to a given cgroup.
+ 	 */
+-	struct list_head e_cset_node[CGROUP_SUBSYS_COUNT];
++	struct list_head e_cset_node[CGROUP_SUBSYS_MAIN_COUNT];
+ 
+ 	/* all threaded csets whose ->dom_cset points to this cset */
+ 	struct list_head threaded_csets;
+@@ -319,9 +329,63 @@
+ 
+ 	/* For RCU-protected deletion */
+ 	struct rcu_head rcu_head;
++	union {
++		struct
++		{
++			ANDROID_BACKPORT_RESERVE(1);/* data */
++		};
++		struct {
++			/* For cgroup_migrate_lock() */
++			struct css_set_ext* ext;
++		};
++	};
++};
++
++static inline bool css_set_uses_ext_ssid(int ssid)
++{
++	return ssid >= CGROUP_SUBSYS_MAIN_COUNT;
++}
++
++static inline int css_set_ext_index(int ssid)
++{
++	return ssid - CGROUP_SUBSYS_MAIN_COUNT;
++}
++
++static inline struct cgroup_subsys_state *css_set_get_subsys(struct css_set *cset,
++						      int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid))
++		return cset->ext->subsys[css_set_ext_index(ssid)];
++	return cset->subsys[ssid];
++}
++
++static inline void css_set_set_subsys(struct css_set *cset, int ssid,
++				      struct cgroup_subsys_state *css)
++{
++	if (css_set_uses_ext_ssid(ssid)){
++		cset->ext->subsys[css_set_ext_index(ssid)] = css;
++		return;
++	}
++	cset->subsys[ssid] = css;
++}
++
++static inline struct list_head *css_set_e_cset_node(struct css_set *cset, int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid))
++		return &cset->ext->e_cset_node[css_set_ext_index(ssid)];
++	return &cset->e_cset_node[ssid];
++}
++
++static inline struct css_set *css_set_from_e_cset_node(struct list_head *node,
++						int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid)) {
++		return container_of(node, struct css_set_ext,
++				e_cset_node[css_set_ext_index(ssid)])->owner;
++	}
+ 
+-	ANDROID_BACKPORT_RESERVE(1);
+-};
++	return container_of(node, struct css_set, e_cset_node[ssid]);
++}
+ 
+ struct cgroup_base_stat {
+ 	struct task_cputime cputime;
+@@ -413,6 +477,12 @@
+ 	 */
+ 	int nr_frozen_tasks;
+ };
++struct cgroup_ext
++{
++	struct cgroup_subsys_state __rcu *subsys[CGROUP_SUBSYS_EXT_SLOTS];
++	int nr_dying_subsys[CGROUP_SUBSYS_EXT_SLOTS];
++	struct list_head e_csets[CGROUP_SUBSYS_EXT_SLOTS];
++};
+ 
+ struct cgroup {
+ 	/* self css with NULL ->ss, points back to this cgroup */
+@@ -486,13 +556,13 @@
+ 	u16 old_subtree_ss_mask;
+ 
+ 	/* Private pointers for each registered subsystem */
+-	struct cgroup_subsys_state __rcu *subsys[CGROUP_SUBSYS_COUNT];
++	struct cgroup_subsys_state __rcu *subsys[CGROUP_SUBSYS_MAIN_COUNT];
+ 
+ 	/*
+ 	 * Keep track of total number of dying CSSes at and below this cgroup.
+ 	 * Protected by cgroup_mutex.
+ 	 */
+-	int nr_dying_subsys[CGROUP_SUBSYS_COUNT];
++	int nr_dying_subsys[CGROUP_SUBSYS_MAIN_COUNT];
+ 
+ 	struct cgroup_root *root;
+ 
+@@ -509,7 +579,7 @@
+ 	 * following lists all css_sets which point to this cgroup's css
+ 	 * for the given subsystem.
+ 	 */
+-	struct list_head e_csets[CGROUP_SUBSYS_COUNT];
++	struct list_head e_csets[CGROUP_SUBSYS_MAIN_COUNT];
+ 
+ 	/*
+ 	 * If !threaded, self.  If threaded, it points to the nearest
+@@ -569,13 +639,40 @@
+ #ifdef CONFIG_BPF_SYSCALL
+ 	struct bpf_local_storage __rcu  *bpf_cgrp_storage;
+ #endif
+-
++union {
++	struct {
+ 	ANDROID_BACKPORT_RESERVE(1);
+-
++	};
++	struct {
++		struct cgroup_ext *ext;
++	};
++};
+ 	/* All ancestors including self */
+ 	struct cgroup *ancestors[];
+ };
+ 
++static inline struct cgroup_subsys_state __rcu **cgroup_subsys_ptr(struct cgroup *cgrp,
++							    int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid))
++		return &cgrp->ext->subsys[css_set_ext_index(ssid)];
++	return &cgrp->subsys[ssid];
++}
++
++static inline int *cgroup_nr_dying_subsys_ptr(struct cgroup *cgrp, int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid))
++		return &cgrp->ext->nr_dying_subsys[css_set_ext_index(ssid)];
++	return &cgrp->nr_dying_subsys[ssid];
++}
++
++static inline struct list_head *cgroup_e_csets_ptr(struct cgroup *cgrp, int ssid)
++{
++	if (css_set_uses_ext_ssid(ssid)) 
++		return &cgrp->ext->e_csets[css_set_ext_index(ssid)];
++	return &cgrp->e_csets[ssid];
++}
++
+ /*
+  * A cgroup_root represents the root of a cgroup hierarchy, and may be
+  * associated with a kernfs_root to form an active hierarchy.  This is
+diff --git a/include/linux/cgroup.h b/include/linux/cgroup.h
+--- a/include/linux/cgroup.h
++++ b/include/linux/cgroup.h
+@@ -411,7 +411,7 @@
+  * synchronization rules are the same as task_css_set_check().
+  */
+ #define task_css_check(task, subsys_id, __c)				\
+-	task_css_set_check((task), (__c))->subsys[(subsys_id)]
++	css_set_get_subsys(task_css_set_check((task), (__c)), (subsys_id))
+ 
+ /**
+  * task_css_set - obtain a task's css_set
+@@ -479,7 +479,7 @@
+ static inline bool task_css_is_root(struct task_struct *task, int subsys_id)
+ {
+ 	return task_css_check(task, subsys_id, true) ==
+-		init_css_set.subsys[subsys_id];
++		css_set_get_subsys(&init_css_set, subsys_id);
+ }
+ 
+ static inline struct cgroup *task_cgroup(struct task_struct *task,
+diff --git a/include/linux/cgroup_subsys.h b/include/linux/cgroup_subsys.h
+--- a/include/linux/cgroup_subsys.h
++++ b/include/linux/cgroup_subsys.h
+@@ -29,9 +29,6 @@
+ SUBSYS(memory)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_DEVICE)
+-SUBSYS(devices)
+-#endif
+ 
+ #if IS_ENABLED(CONFIG_CGROUP_FREEZER)
+ SUBSYS(freezer)
+@@ -41,21 +38,10 @@
+ SUBSYS(net_cls)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_PERF)
+-SUBSYS(perf_event)
+-#endif
+-
+ #if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
+ SUBSYS(net_prio)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_HUGETLB)
+-SUBSYS(hugetlb)
+-#endif
+-
+-#if IS_ENABLED(CONFIG_CGROUP_PIDS)
+-SUBSYS(pids)
+-#endif
+ 
+ #if IS_ENABLED(CONFIG_CGROUP_RDMA)
+ SUBSYS(rdma)
+@@ -75,3 +61,19 @@
+ /*
+  * DO NOT ADD ANY SUBSYSTEM WITHOUT EXPLICIT ACKS FROM CGROUP MAINTAINERS.
+  */
++
++#if IS_ENABLED(CONFIG_CGROUP_DEVICE)
++SUBSYS(devices)
++#endif
++
++#if IS_ENABLED(CONFIG_CGROUP_PIDS)
++SUBSYS(pids)
++#endif
++
++#if IS_ENABLED(CONFIG_CGROUP_PERF)
++SUBSYS(perf_event)
++#endif
++
++#if IS_ENABLED(CONFIG_CGROUP_HUGETLB)
++SUBSYS(hugetlb)
++#endif
+\ 文件末尾没有换行符
+diff --git a/include/linux/ipv6.h b/include/linux/ipv6.h
+--- a/include/linux/ipv6.h
++++ b/include/linux/ipv6.h
+@@ -220,11 +220,10 @@
+ struct ipv6_pinfo {
+ 	struct in6_addr 	saddr;
+ 	struct in6_pktinfo	sticky_pktinfo;
+-	const struct in6_addr		*daddr_cache;
+ #ifdef CONFIG_IPV6_SUBTREES
+-	const struct in6_addr		*saddr_cache;
++	__u32		saddr_cache_low;
+ #endif
+-
++	const struct in6_addr		*daddr_cache;
+ 	__be32			flow_label;
+ 	__u32			frag_size;
+ 
+@@ -269,6 +268,10 @@
+ 
+ 	__u32			dst_cookie;
+ 
++#ifdef CONFIG_IPV6_SUBTREES
++	__u32		saddr_cache_high;
++#endif
++
+ 	struct ipv6_mc_socklist	__rcu *ipv6_mc_list;
+ 	struct ipv6_ac_socklist	*ipv6_ac_list;
+ 	struct ipv6_fl_socklist __rcu *ipv6_fl_list;
+@@ -278,6 +281,18 @@
+ 	struct sk_buff		*rxpmtu;
+ 	struct inet6_cork	cork;
+ };
++#ifdef CONFIG_IPV6_SUBTREES//SPLIT POINTER FOR COMPATIBILITY
++//recombine saddr_cache_low and saddr_cache_high to a pointer
++static inline const struct in6_addr *hack_saddr_cache(const struct ipv6_pinfo *np)
++{
++	return (const struct in6_addr *)(((__u64)np->saddr_cache_high << 32) | np->saddr_cache_low);
++}
++//store a pointer into saddr_cache_low and saddr_cache_high
++static inline void hack_set_saddr_cache(struct ipv6_pinfo *np, const struct in6_addr *ptr)
++{	np->saddr_cache_low = (unsigned long)ptr & 0xFFFFFFFF;
++	np->saddr_cache_high = ((unsigned long)ptr >> 32) & 0xFFFFFFFF;
++}
++#endif
+ 
+ /* We currently use available bits from inet_sk(sk)->inet_flags,
+  * this could change in the future.
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -2179,9 +2179,6 @@
+ 	const struct iw_handler_def *wireless_handlers;
+ 	struct iw_public_data	*wireless_data;
+ 	const struct ethtool_ops *ethtool_ops;
+-#ifdef CONFIG_NET_L3_MASTER_DEV
+-	const struct l3mdev_ops	*l3mdev_ops;
+-#endif
+ #if IS_ENABLED(CONFIG_IPV6)
+ 	const struct ndisc_ops *ndisc_ops;
+ #endif
+@@ -2255,9 +2252,6 @@
+ #if IS_ENABLED(CONFIG_IEEE802154) || IS_ENABLED(CONFIG_6LOWPAN)
+ 	struct wpan_dev		*ieee802154_ptr;
+ #endif
+-#if IS_ENABLED(CONFIG_MPLS_ROUTING)
+-	struct mpls_dev __rcu	*mpls_ptr;
+-#endif
+ #if IS_ENABLED(CONFIG_MCTP)
+ 	struct mctp_dev __rcu	*mctp_ptr;
+ #endif
+@@ -2426,8 +2420,26 @@
+ 
+ 	ANDROID_KABI_RESERVE(1);
+ 	ANDROID_KABI_RESERVE(2);
+-	ANDROID_KABI_RESERVE(3);
+-	ANDROID_KABI_RESERVE(4);
++	union{
++		struct {
++			ANDROID_KABI_RESERVE(3);
++		};
++		struct {
++			#ifdef CONFIG_NET_L3_MASTER_DEV
++			const struct l3mdev_ops	*l3mdev_ops;
++			#endif
++		};
++	};
++	union{
++		struct{
++			ANDROID_KABI_RESERVE(4);
++		};
++		struct{
++#if IS_ENABLED(CONFIG_MPLS_ROUTING)
++			struct mpls_dev __rcu	*mpls_ptr;
++#endif
++		};
++	};
+ 	ANDROID_KABI_RESERVE(5);
+ 	ANDROID_KABI_RESERVE(6);
+ 	ANDROID_KABI_RESERVE(7);
+diff --git a/include/linux/netfilter.h b/include/linux/netfilter.h
+--- a/include/linux/netfilter.h
++++ b/include/linux/netfilter.h
+@@ -255,7 +255,7 @@
+ 		break;
+ 	case NFPROTO_BRIDGE:
+ #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+-		hook_head = rcu_dereference(net->nf.hooks_bridge[hook]);
++		hook_head = rcu_dereference(net->nf.additional_info->hooks_bridge[hook]);
+ #endif
+ 		break;
+ 	default:
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -815,12 +815,16 @@
+ 	/* mmap bits */
+ 	struct mutex			mmap_mutex;
+ 	atomic_t			mmap_count;
+-
++#ifdef CONFIG_CGROUP_PERF
++	u32 cgrp_high; /* cgroup event is attach to */ //fuck kabi
++#endif
+ 	struct perf_buffer		*rb;
+ 	struct list_head		rb_entry;
+ 	unsigned long			rcu_batches;
+ 	int				rcu_pending;
+-
++#ifdef CONFIG_CGROUP_PERF
++	u32 cgrp_low; // fuck u Google
++#endif
+ 	/* poll related */
+ 	wait_queue_head_t		waitq;
+ 	struct fasync_struct		*fasync;
+@@ -868,10 +872,6 @@
+ #endif
+ #endif
+ 
+-#ifdef CONFIG_CGROUP_PERF
+-	struct perf_cgroup		*cgrp; /* cgroup event is attach to */
+-#endif
+-
+ #ifdef CONFIG_SECURITY
+ 	void *security;
+ #endif
+@@ -886,7 +886,18 @@
+ 	__u32				orig_type;
+ #endif /* CONFIG_PERF_EVENTS */
+ };
+-
++#ifdef CONFIG_CGROUP_PERF
++static inline struct perf_cgroup *get_cgrp(const struct perf_event *event)
++{
++    return (struct perf_cgroup *)((uint64_t)event->cgrp_high << 32 | event->cgrp_low);
++}
++static inline void set_cgrp(struct perf_event *event, struct perf_cgroup *cgrp)
++{
++    uint64_t val = (uint64_t)cgrp;
++    event->cgrp_low = (u32)val;
++    event->cgrp_high = (u32)(val >> 32);
++}
++#endif
+ /*
+  *           ,-----------------------[1:n]------------------------.
+  *           V                                                    V
+@@ -1046,9 +1057,6 @@
+ 	struct perf_event_context	*task_ctx;
+ 	int				online;
+ 
+-#ifdef CONFIG_CGROUP_PERF
+-	struct perf_cgroup		*cgrp;
+-#endif
+ 
+ 	/*
+ 	 * Per-CPU storage for iterators used in visit_groups_merge. The default
+@@ -1057,7 +1065,37 @@
+ 	int				heap_size;
+ 	struct perf_event		**heap;
+ 	struct perf_event		*heap_default[2];
+-};
++};// am i crazy??
++#ifdef CONFIG_CGROUP_PERF //该死的 GKI abi
++
++/* 将 cgroup 指针存入 mutex 的 OEM 预留字段（第一个 u64） */
++static inline void perf_cpu_ctx_set_cgrp(struct perf_cpu_context *cpuctx,
++					 struct perf_cgroup *cgrp)
++{
++	struct mutex *mutex = &cpuctx->ctx.mutex;
++	mutex->android_oem_data1[1] = (u64)(uintptr_t)cgrp;
++}
++
++static inline struct perf_cgroup *
++perf_cpu_ctx_get_cgrp_readonce(struct perf_cpu_context *cpuctx)
++{
++	struct mutex *mutex = &cpuctx->ctx.mutex;
++	uintptr_t ptr;
++
++	/* 使用 READ_ONCE 确保读取的原子性/volatile */
++	ptr = (uintptr_t)READ_ONCE(mutex->android_oem_data1[1]);
++	return (struct perf_cgroup *)ptr;
++}
++
++/* 从 mutex 的 OEM 预留字段读取 cgroup 指针 */
++static inline struct perf_cgroup *
++perf_cpu_ctx_get_cgrp(struct perf_cpu_context *cpuctx)
++{
++	struct mutex *mutex = &cpuctx->ctx.mutex;
++	return (struct perf_cgroup *)(uintptr_t)mutex->android_oem_data1[1];
++}
++
++#endif /* CONFIG_CGROUP_PERF */
+ 
+ struct perf_output_handle {
+ 	struct perf_event		*event;
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -884,6 +884,11 @@
+ 	int				static_prio;
+ 	int				normal_prio;
+ 	unsigned int			rt_priority;
++	//28 byte hole
++#ifdef CONFIG_SYSVIPC
++    struct sysv_shm sysvshm;   /* 16 字节（两个指针） */
++	struct sysv_sem sysvsem;   /* 8 字节（一个指针） */
++#endif
+ 
+ 	struct sched_entity		se;
+ 	struct sched_rt_entity		rt;
+@@ -1190,11 +1195,6 @@
+ 	char				comm[TASK_COMM_LEN];
+ 
+ 	struct nameidata		*nameidata;
+-
+-#ifdef CONFIG_SYSVIPC
+-	struct sysv_sem			sysvsem;
+-	struct sysv_shm			sysvshm;
+-#endif
+ #ifdef CONFIG_DETECT_HUNG_TASK
+ 	unsigned long			last_switch_count;
+ 	unsigned long			last_switch_time;
+@@ -1651,7 +1651,7 @@
+ 	struct callback_head		l1d_flush_kill;
+ #endif
+ 	ANDROID_KABI_RESERVE(1);
+-	ANDROID_KABI_RESERVE(2);
++    ANDROID_KABI_RESERVE(2);
+ 	ANDROID_KABI_RESERVE(3);
+ 	ANDROID_KABI_RESERVE(4);
+ 	ANDROID_KABI_RESERVE(5);
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -992,9 +992,6 @@
+ 	__u8			ndisc_nodetype:2;
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_IP_VS)
+-	__u8			ipvs_property:1;
+-#endif
+ #if IS_ENABLED(CONFIG_NETFILTER_XT_TARGET_TRACE) || IS_ENABLED(CONFIG_NF_TABLES)
+ 	__u8			nf_trace:1;
+ #endif
+@@ -1013,10 +1010,13 @@
+ 	__u8			decrypted:1;
+ #endif
+ 	__u8			slow_gro:1;
++	__u8			unreadable:1;
++#if IS_ENABLED(CONFIG_IP_VS)
++	__u8			ipvs_property:1;
++#endif
+ #if IS_ENABLED(CONFIG_IP_SCTP)
+ 	__u8			csum_not_inet:1;
+ #endif
+-	__u8			unreadable:1;
+ #if defined(CONFIG_NET_SCHED) || defined(CONFIG_NET_XGRESS)
+ 	__u16			tc_index;	/* traffic control index */
+ #endif
+diff --git a/include/net/ip6_fib.h b/include/net/ip6_fib.h
+--- a/include/net/ip6_fib.h
++++ b/include/net/ip6_fib.h
+@@ -71,9 +71,6 @@
+ 	struct fib6_node __rcu	*parent;
+ 	struct fib6_node __rcu	*left;
+ 	struct fib6_node __rcu	*right;
+-#ifdef CONFIG_IPV6_SUBTREES
+-	struct fib6_node __rcu	*subtree;
+-#endif
+ 	struct fib6_info __rcu	*leaf;
+ 
+ 	__u16			fn_bit;		/* bit key */
+@@ -82,7 +79,16 @@
+ 	struct fib6_info __rcu	*rr_ptr;
+ 	struct rcu_head		rcu;
+ 
+-	ANDROID_KABI_RESERVE(1);
++	union{
++		struct{
++			ANDROID_KABI_RESERVE(1);
++		};
++		struct{
++			#ifdef CONFIG_IPV6_SUBTREES
++			struct fib6_node __rcu	*subtree;
++			#endif
++		};
++	};
+ };
+ 
+ struct fib6_gc_args {
+@@ -355,13 +361,13 @@
+ }
+ 
+ enum fib6_walk_state {
+-#ifdef CONFIG_IPV6_SUBTREES
+-	FWS_S,
+-#endif
+ 	FWS_L,
+ 	FWS_R,
+ 	FWS_C,
+ 	FWS_U
++#ifdef CONFIG_IPV6_SUBTREES
++	,FWS_S
++#endif
+ };
+ 
+ struct fib6_walker {
+diff --git a/include/net/ip6_route.h b/include/net/ip6_route.h
+--- a/include/net/ip6_route.h
++++ b/include/net/ip6_route.h
+@@ -238,7 +238,7 @@
+ 	sk_setup_caps(sk, dst);
+ 	np->daddr_cache = daddr;
+ #ifdef CONFIG_IPV6_SUBTREES
+-	np->saddr_cache = saddr;
++	hack_set_saddr_cache(np, saddr);
+ #endif
+ }
+ 
+diff --git a/include/net/ip_vs.h b/include/net/ip_vs.h
+--- a/include/net/ip_vs.h
++++ b/include/net/ip_vs.h
+@@ -37,7 +37,7 @@
+ /* Generic access of ipvs struct */
+ static inline struct netns_ipvs *net_ipvs(struct net* net)
+ {
+-	return net->ipvs;
++	return net_ipvs_ptr(net);
+ }
+ 
+ /* Connections' size value needed by ip_vs_ctl.c */
+diff --git a/include/net/netfilter/nf_conntrack.h b/include/net/netfilter/nf_conntrack.h
+--- a/include/net/netfilter/nf_conntrack.h
++++ b/include/net/netfilter/nf_conntrack.h
+@@ -90,10 +90,6 @@
+ 	spinlock_t	lock;
+ 	/* jiffies32 when this ct is considered dead */
+ 	u32 timeout;
+-
+-#ifdef CONFIG_NF_CONNTRACK_ZONES
+-	struct nf_conntrack_zone zone;
+-#endif
+ 	/* XXX should I move this to the tail ? - Y.K */
+ 	/* These are my tuples; original and reply */
+ 	struct nf_conntrack_tuple_hash tuplehash[IP_CT_DIR_MAX];
+@@ -125,9 +121,19 @@
+ 
+ 	/* Storage reserved for other modules, must be the last member */
+ 	union nf_conntrack_proto proto;
+-
++	union
++	{struct{
+ 	ANDROID_KABI_RESERVE(1);
+ 	ANDROID_KABI_RESERVE(2);
++	};
++	struct 
++	{
++#ifdef CONFIG_NF_CONNTRACK_ZONES
++	struct nf_conntrack_zone zone;
++#endif
++	};
++	
++	};
+ 	ANDROID_OEM_DATA(1);
+ };
+ 
+diff --git a/include/net/netfilter/nf_tables.h b/include/net/netfilter/nf_tables.h
+--- a/include/net/netfilter/nf_tables.h
++++ b/include/net/netfilter/nf_tables.h
+@@ -1538,7 +1538,7 @@
+  */
+ static inline unsigned int nft_gencursor_next(const struct net *net)
+ {
+-	return net->nft.gencursor + 1 == 1 ? 1 : 0;
++	return net_nft(net).gencursor + 1 == 1 ? 1 : 0;
+ }
+ 
+ static inline u8 nft_genmask_next(const struct net *net)
+@@ -1549,7 +1549,7 @@
+ static inline u8 nft_genmask_cur(const struct net *net)
+ {
+ 	/* Use READ_ONCE() to prevent refetching the value for atomicity */
+-	return 1 << READ_ONCE(net->nft.gencursor);
++	return 1 << READ_ONCE(net_nft(net).gencursor);
+ }
+ 
+ #define NFT_GENMASK_ANY		((1 << 0) | (1 << 1))
+diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
+--- a/include/net/net_namespace.h
++++ b/include/net/net_namespace.h
+@@ -57,7 +57,21 @@
+ 
+ #define NETDEV_HASHBITS    8
+ #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
+-
++struct net_ext {
++	struct net		*net;
++#if IS_ENABLED(CONFIG_IP_VS)
++	struct netns_ipvs	*ipvs;
++#endif
++#if defined(CONFIG_IP_SCTP) || defined(CONFIG_IP_SCTP_MODULE)
++	struct netns_sctp	sctp;
++#endif
++#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
++	struct netns_nftables	nft;
++#endif
++#if IS_ENABLED(CONFIG_MPLS)
++	struct netns_mpls	mpls;
++#endif
++};
+ struct net {
+ 	/* First cache line can be often dirtied.
+ 	 * Do not place here read-mostly fields.
+@@ -137,17 +151,11 @@
+ #if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
+ 	struct netns_ieee802154_lowpan	ieee802154_lowpan;
+ #endif
+-#if defined(CONFIG_IP_SCTP) || defined(CONFIG_IP_SCTP_MODULE)
+-	struct netns_sctp	sctp;
+-#endif
+ #ifdef CONFIG_NETFILTER
+ 	struct netns_nf		nf;
+ #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+ 	struct netns_ct		ct;
+ #endif
+-#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
+-	struct netns_nftables	nft;
+-#endif
+ #if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
+ 	struct netns_ft ft;
+ #endif
+@@ -166,13 +174,6 @@
+ #endif
+ 
+ 	u64			net_cookie; /* written once */
+-
+-#if IS_ENABLED(CONFIG_IP_VS)
+-	struct netns_ipvs	*ipvs;
+-#endif
+-#if IS_ENABLED(CONFIG_MPLS)
+-	struct netns_mpls	mpls;
+-#endif
+ #if IS_ENABLED(CONFIG_CAN)
+ 	struct netns_can	can;
+ #endif
+@@ -189,8 +190,34 @@
+ #if IS_ENABLED(CONFIG_SMC)
+ 	struct netns_smc	smc;
+ #endif
++	/* Keep legacy tail padding footprint; overlay nft state when enabled. */
++	union {
++		struct {
++			/* Force padding: keep 16-byte tail reservation for ABI stability. */
++			u64	__net_tail_pad1;
++			u64	__net_tail_pad2;
++		};
++		struct {
++			struct net_ext *ext;
++		};
++	};
+ } __randomize_layout;
+ 
++#if IS_ENABLED(CONFIG_IP_VS)
++#define net_ipvs_ptr(_net)	((_net)->ext->ipvs)
++#endif
++
++#if defined(CONFIG_IP_SCTP) || defined(CONFIG_IP_SCTP_MODULE)
++#define net_sctp(_net)		((_net)->ext->sctp)
++#endif
++
++#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
++#define net_nft(_net)		((_net)->ext->nft)
++#endif
++#if IS_ENABLED(CONFIG_MPLS)
++#define net_mpls(_net)		((_net)->ext->mpls)
++#endif
++
+ #include <linux/seq_file_net.h>
+ 
+ /* Init's network namespace */
+diff --git a/include/net/netns/ipv4.h b/include/net/netns/ipv4.h
+--- a/include/net/netns/ipv4.h
++++ b/include/net/netns/ipv4.h
+@@ -80,7 +80,10 @@
+ 	int sysctl_tcp_reordering;
+ 	int sysctl_tcp_rmem[3];
+ 	__cacheline_group_end(netns_ipv4_read_rx);
+-
++	#ifdef CONFIG_IP_ROUTE_MULTIPATH //using 12byte hole
++	struct sysctl_fib_multipath_hash_seed sysctl_fib_multipath_hash_seed; //64bit 8bytes
++	u32 sysctl_fib_multipath_hash_fields;//4b
++	#endif
+ 	struct inet_timewait_death_row tcp_death_row;
+ 	struct udp_table *udp_table;
+ 
+@@ -105,9 +108,6 @@
+ 	bool			fib_has_custom_local_routes;
+ 	bool			fib_offload_disabled;
+ 	u8			sysctl_tcp_shrink_window;
+-#ifdef CONFIG_IP_ROUTE_CLASSID
+-	atomic_t		fib_num_tclassid_users;
+-#endif
+ 	struct hlist_head	*fib_table_hash;
+ 	struct sock		*fibnl;
+ 
+@@ -121,6 +121,10 @@
+ 	u8 sysctl_icmp_echo_ignore_broadcasts;
+ 	u8 sysctl_icmp_ignore_bogus_error_responses;
+ 	u8 sysctl_icmp_errors_use_inbound_ifaddr;
++	#ifdef CONFIG_IP_ROUTE_MULTIPATH
++	u8 sysctl_fib_multipath_use_neigh;//1
++	u8 sysctl_fib_multipath_hash_policy;//1b
++	#endif
+ 	int sysctl_icmp_ratelimit;
+ 	int sysctl_icmp_ratemask;
+ 	int sysctl_icmp_msgs_per_sec;
+@@ -143,18 +147,12 @@
+ 	u8 sysctl_ip_autobind_reuse;
+ 	/* Shall we try to damage output packets if routing dev changes? */
+ 	u8 sysctl_ip_dynaddr;
+-#ifdef CONFIG_NET_L3_MASTER_DEV
+-	u8 sysctl_raw_l3mdev_accept;
+-#endif
+ 	u8 sysctl_udp_early_demux;
+ 
+ 	u8 sysctl_nexthop_compat_mode;
+ 
+ 	u8 sysctl_fwmark_reflect;
+ 	u8 sysctl_tcp_fwmark_accept;
+-#ifdef CONFIG_NET_L3_MASTER_DEV
+-	u8 sysctl_tcp_l3mdev_accept;
+-#endif
+ 	u8 sysctl_tcp_mtu_probing;
+ 	int sysctl_tcp_mtu_probe_floor;
+ 	int sysctl_tcp_base_mss;
+@@ -227,11 +225,6 @@
+ 
+ 	u8 sysctl_fib_notify_on_flag_change;
+ 	u8 sysctl_tcp_syn_linear_timeouts;
+-
+-#ifdef CONFIG_NET_L3_MASTER_DEV
+-	u8 sysctl_udp_l3mdev_accept;
+-#endif
+-
+ 	u8 sysctl_igmp_llm_reports;
+ 	int sysctl_igmp_max_memberships;
+ 	int sysctl_igmp_max_msf;
+@@ -247,22 +240,6 @@
+ 	unsigned long *sysctl_local_reserved_ports;
+ 	int sysctl_ip_prot_sock;
+ #endif
+-
+-#ifdef CONFIG_IP_MROUTE
+-#ifndef CONFIG_IP_MROUTE_MULTIPLE_TABLES
+-	struct mr_table		*mrt;
+-#else
+-	struct list_head	mr_tables;
+-	struct fib_rules_ops	*mr_rules_ops;
+-#endif
+-#endif
+-#ifdef CONFIG_IP_ROUTE_MULTIPATH
+-	struct sysctl_fib_multipath_hash_seed sysctl_fib_multipath_hash_seed;
+-	u32 sysctl_fib_multipath_hash_fields;
+-	u8 sysctl_fib_multipath_use_neigh;
+-	u8 sysctl_fib_multipath_hash_policy;
+-#endif
+-
+ 	struct fib_notifier_ops	*notifier_ops;
+ 	unsigned int	fib_seq;	/* protected by rtnl_mutex */
+ 
+@@ -271,7 +248,43 @@
+ 
+ 	atomic_t	rt_genid;
+ 	siphash_key_t	ip_id_key;
+-
+-	ANDROID_KABI_RESERVE(1);
++	union
++	{
++		struct{
++			ANDROID_KABI_RESERVE(1);
++		};
++		struct{
++#ifdef CONFIG_IP_ROUTE_CLASSID
++	atomic_t		fib_num_tclassid_users;
++#endif
++#ifdef CONFIG_NET_L3_MASTER_DEV
++	u8 sysctl_raw_l3mdev_accept;
++	u8 sysctl_tcp_l3mdev_accept;
++	u8 sysctl_udp_l3mdev_accept;
++#endif
++		};
++	};
++	union
++	{
++		struct{
++			u64 __force_padding1;
++			u64 __force_padding2;
++			u64 __force_padding3;//24bytes
++		};
++		struct 
++		{
++			#ifdef CONFIG_IP_MROUTE
++#ifndef CONFIG_IP_MROUTE_MULTIPLE_TABLES
++	struct mr_table		*mrt; //8
++#else
++	struct list_head	mr_tables;//16
++	struct fib_rules_ops	*mr_rules_ops;//8
++#endif
++#endif
++			/* data */
++		};
++		
++	};
++	
+ };
+ #endif
+diff --git a/include/net/netns/ipv6.h b/include/net/netns/ipv6.h
+--- a/include/net/netns/ipv6.h
++++ b/include/net/netns/ipv6.h
+@@ -85,9 +85,6 @@
+ #ifdef CONFIG_IPV6_MULTIPLE_TABLES
+ 	bool			fib6_has_custom_rules;
+ 	unsigned int		fib6_rules_require_fldissect;
+-#ifdef CONFIG_IPV6_SUBTREES
+-	unsigned int		fib6_routes_require_src;
+-#endif
+ 	struct rt6_info         *ip6_prohibit_entry;
+ 	struct rt6_info         *ip6_blk_hole_entry;
+ 	struct fib6_table       *fib6_local_tbl;
+@@ -100,6 +97,11 @@
+ 
+ 	struct hlist_head	*inet6_addr_lst;
+ 	spinlock_t		addrconf_hash_lock;
++#ifdef CONFIG_IPV6_MULTIPLE_TABLES
++#ifdef CONFIG_IPV6_SUBTREES
++	unsigned int		fib6_routes_require_src;
++#endif
++#endif
+ 	struct delayed_work	addr_chk_work;
+ 
+ #ifdef CONFIG_IPV6_MROUTE
+diff --git a/include/net/netns/netfilter.h b/include/net/netns/netfilter.h
+--- a/include/net/netns/netfilter.h
++++ b/include/net/netns/netfilter.h
+@@ -9,6 +9,17 @@
+ struct nf_logger;
+ struct nf_queue_handler;
+ 
++struct netns_nf_additional_info {
++#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
++	struct nf_hook_entries __rcu *hooks_bridge[NF_INET_NUMHOOKS];
++#endif
++#ifdef CONFIG_SYSCTL
++#ifdef CONFIG_LWTUNNEL
++	struct ctl_table_header *nf_lwtnl_dir_header;
++#endif
++#endif
++};
++
+ struct netns_nf {
+ #if defined CONFIG_PROC_FS
+ 	struct proc_dir_entry *proc_netfilter;
+@@ -16,25 +27,26 @@
+ 	const struct nf_logger __rcu *nf_loggers[NFPROTO_NUMPROTO];
+ #ifdef CONFIG_SYSCTL
+ 	struct ctl_table_header *nf_log_dir_header;
+-#ifdef CONFIG_LWTUNNEL
+-	struct ctl_table_header *nf_lwtnl_dir_header;
+-#endif
+ #endif
+ 	struct nf_hook_entries __rcu *hooks_ipv4[NF_INET_NUMHOOKS];
+ 	struct nf_hook_entries __rcu *hooks_ipv6[NF_INET_NUMHOOKS];
+ #ifdef CONFIG_NETFILTER_FAMILY_ARP
+ 	struct nf_hook_entries __rcu *hooks_arp[NF_ARP_NUMHOOKS];
+ #endif
+-#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+-	struct nf_hook_entries __rcu *hooks_bridge[NF_INET_NUMHOOKS];
+-#endif
+ #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV4)
+ 	unsigned int defrag_ipv4_users;
+ #endif
+ #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
+ 	unsigned int defrag_ipv6_users;
+ #endif
+-
+-	ANDROID_KABI_RESERVE(1);
++	union {
++		struct {
++			ANDROID_KABI_RESERVE(1);
++		};
++		struct {
++			struct netns_nf_additional_info *additional_info;
++		};
++	};
+ };
+-#endif
++
++#endif
+\ 文件末尾没有换行符
+diff --git a/include/net/sctp/sctp.h b/include/net/sctp/sctp.h
+--- a/include/net/sctp/sctp.h
++++ b/include/net/sctp/sctp.h
+@@ -204,9 +204,9 @@
+  */
+ 
+ /* SCTP SNMP MIB stats handlers */
+-#define SCTP_INC_STATS(net, field)	SNMP_INC_STATS((net)->sctp.sctp_statistics, field)
+-#define __SCTP_INC_STATS(net, field)	__SNMP_INC_STATS((net)->sctp.sctp_statistics, field)
+-#define SCTP_DEC_STATS(net, field)	SNMP_DEC_STATS((net)->sctp.sctp_statistics, field)
++#define SCTP_INC_STATS(net, field)	SNMP_INC_STATS(net_sctp(net).sctp_statistics, field)
++#define __SCTP_INC_STATS(net, field)	__SNMP_INC_STATS(net_sctp(net).sctp_statistics, field)
++#define SCTP_DEC_STATS(net, field)	SNMP_DEC_STATS(net_sctp(net).sctp_statistics, field)
+ 
+ /* sctp mib definitions */
+ enum {
+diff --git a/kernel/cgroup/cgroup.c b/kernel/cgroup/cgroup.c
+--- a/kernel/cgroup/cgroup.c
++++ b/kernel/cgroup/cgroup.c
+@@ -166,9 +166,13 @@
+ #undef SUBSYS
+ 
+ static DEFINE_PER_CPU(struct cgroup_rstat_cpu, cgrp_dfl_root_rstat_cpu);
++static struct cgroup_ext cgrp_dfl_root_ext;
+ 
+ /* the default hierarchy */
+-struct cgroup_root cgrp_dfl_root = { .cgrp.rstat_cpu = &cgrp_dfl_root_rstat_cpu };
++struct cgroup_root cgrp_dfl_root = {
++	.cgrp.rstat_cpu = &cgrp_dfl_root_rstat_cpu,
++	.cgrp.ext = &cgrp_dfl_root_ext,
++};
+ EXPORT_SYMBOL_GPL(cgrp_dfl_root);
+ 
+ /*
+@@ -492,8 +496,8 @@
+ 					      struct cgroup_subsys *ss)
+ {
+ 	if (CGROUP_HAS_SUBSYS_CONFIG && ss)
+-		return rcu_dereference_check(cgrp->subsys[ss->id],
+-					lockdep_is_held(&cgroup_mutex));
++		return rcu_dereference_check(*cgroup_subsys_ptr(cgrp, ss->id),
++					     lockdep_is_held(&cgroup_mutex));
+ 	else
+ 		return &cgrp->self;
+ }
+@@ -558,7 +562,7 @@
+ 		cgrp = cgroup_parent(cgrp);
+ 	} while (cgrp);
+ 
+-	return init_css_set.subsys[ss->id];
++	return css_set_get_subsys(&init_css_set, ss->id);
+ }
+ 
+ /**
+@@ -590,7 +594,7 @@
+ 		cgrp = cgroup_parent(cgrp);
+ 	} while (cgrp);
+ 
+-	css = init_css_set.subsys[ss->id];
++	css = css_set_get_subsys(&init_css_set, ss->id);
+ 	css_get(css);
+ out_unlock:
+ 	rcu_read_unlock();
+@@ -651,7 +655,7 @@
+ 	 * be and stay valid until the enclosing operation is complete.
+ 	 */
+ 	if (CGROUP_HAS_SUBSYS_CONFIG && cft->ss)
+-		return rcu_dereference_raw(cgrp->subsys[cft->ss->id]);
++		return rcu_dereference_raw(*cgroup_subsys_ptr(cgrp, cft->ss->id));
+ 	else
+ 		return &cgrp->self;
+ }
+@@ -668,7 +672,7 @@
+ #define for_each_css(css, ssid, cgrp)					\
+ 	for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT; (ssid)++)	\
+ 		if (!((css) = rcu_dereference_check(			\
+-				(cgrp)->subsys[(ssid)],			\
++				*cgroup_subsys_ptr((cgrp), (ssid)),		\
+ 				lockdep_is_held(&cgroup_mutex)))) { }	\
+ 		else
+ 
+@@ -729,8 +733,18 @@
+  * reference-counted, to improve performance when child cgroups
+  * haven't been created.
+  */
++static struct css_set_ext init_css_set_ext = {
++	.e_cset_node = {
++		LIST_HEAD_INIT(init_css_set_ext.e_cset_node[0]),
++		LIST_HEAD_INIT(init_css_set_ext.e_cset_node[1]),
++		LIST_HEAD_INIT(init_css_set_ext.e_cset_node[2]),
++		LIST_HEAD_INIT(init_css_set_ext.e_cset_node[3]),
++	},
++};
++
+ struct css_set init_css_set = {
+ 	.refcount		= REFCOUNT_INIT(1),
++	.ext			= &init_css_set_ext,
+ 	.dom_cset		= &init_css_set,
+ 	.tasks			= LIST_HEAD_INIT(init_css_set.tasks),
+ 	.mg_tasks		= LIST_HEAD_INIT(init_css_set.mg_tasks),
+@@ -926,6 +940,19 @@
+ 	return key;
+ }
+ 
++static unsigned long css_set_hash_from_cset(struct css_set *cset)
++{
++	unsigned long key = 0UL;
++	struct cgroup_subsys *ss;
++	int i;
++
++	for_each_subsys(ss, i)
++		key += (unsigned long)css_set_get_subsys(cset, i);
++	key = (key >> 16) ^ key;
++
++	return key;
++}
++
+ void put_css_set_locked(struct css_set *cset)
+ {
+ 	struct cgrp_cset_link *link, *tmp_link;
+@@ -941,8 +968,8 @@
+ 
+ 	/* This css_set is dead. Unlink it and release cgroup and css refs */
+ 	for_each_subsys(ss, ssid) {
+-		list_del(&cset->e_cset_node[ssid]);
+-		css_put(cset->subsys[ssid]);
++		list_del(css_set_e_cset_node(cset, ssid));
++		css_put(css_set_get_subsys(cset, ssid));
+ 	}
+ 	hash_del(&cset->hlist);
+ 	css_set_count--;
+@@ -960,6 +987,7 @@
+ 		put_css_set_locked(cset->dom_cset);
+ 	}
+ 
++	kfree(cset->ext);//may cause use after free
+ 	kfree_rcu(cset, rcu_head);
+ }
+ 
+@@ -980,14 +1008,16 @@
+ {
+ 	struct cgroup *new_dfl_cgrp;
+ 	struct list_head *l1, *l2;
++	int i;
+ 
+ 	/*
+ 	 * On the default hierarchy, there can be csets which are
+ 	 * associated with the same set of cgroups but different csses.
+ 	 * Let's first ensure that csses match.
+ 	 */
+-	if (memcmp(template, cset->subsys, sizeof(cset->subsys)))
+-		return false;
++	for (i = 0; i < CGROUP_SUBSYS_COUNT; i++)
++		if (template[i] != css_set_get_subsys(cset, i))
++			return false;
+ 
+ 
+ 	/* @cset's domain should match the default cgroup's */
+@@ -1079,7 +1109,7 @@
+ 			 * @ss is not in this hierarchy, so we don't want
+ 			 * to change the css.
+ 			 */
+-			template[i] = old_cset->subsys[i];
++			template[i] = css_set_get_subsys(old_cset, i);
+ 		}
+ 	}
+ 
+@@ -1198,9 +1228,16 @@
+ 	cset = kzalloc(sizeof(*cset), GFP_KERNEL);
+ 	if (!cset)
+ 		return NULL;
++	cset->ext = kzalloc(sizeof(*cset->ext), GFP_KERNEL);
++	if (!cset->ext) {
++		kfree(cset);
++		return NULL;
++	}
++	cset->ext->owner = cset;
+ 
+ 	/* Allocate all the cgrp_cset_link objects that we'll need */
+ 	if (allocate_cgrp_cset_links(cgroup_root_count, &tmp_links) < 0) {
++		kfree(cset->ext);
+ 		kfree(cset);
+ 		return NULL;
+ 	}
+@@ -1220,7 +1257,8 @@
+ 
+ 	/* Copy the set of subsystem state objects generated in
+ 	 * find_existing_css_set() */
+-	memcpy(cset->subsys, template, sizeof(cset->subsys));
++	for_each_subsys(ss, ssid)
++		css_set_set_subsys(cset, ssid, template[ssid]);
+ 
+ 	spin_lock_irq(&css_set_lock);
+ 	/* Add reference counts and links from the new css_set. */
+@@ -1237,14 +1275,13 @@
+ 	css_set_count++;
+ 
+ 	/* Add @cset to the hash table */
+-	key = css_set_hash(cset->subsys);
++	key = css_set_hash_from_cset(cset);
+ 	hash_add(css_set_table, &cset->hlist, key);
+ 
+ 	for_each_subsys(ss, ssid) {
+-		struct cgroup_subsys_state *css = cset->subsys[ssid];
+-
+-		list_add_tail(&cset->e_cset_node[ssid],
+-			      &css->cgroup->e_csets[ssid]);
++		struct cgroup_subsys_state *css = css_set_get_subsys(cset, ssid);
++		list_add_tail(css_set_e_cset_node(cset, ssid),
++			      cgroup_e_csets_ptr(css->cgroup, ssid));
+ 		css_get(css);
+ 	}
+ 
+@@ -1364,6 +1401,8 @@
+ 
+ 	cgroup_rstat_exit(cgrp);
+ 	kernfs_destroy_root(root->kf_root);
++	if (root != &cgrp_dfl_root)
++		kfree(cgrp->ext);
+ 	cgroup_free_root(root);
+ }
+ 
+@@ -1830,7 +1869,7 @@
+ 		struct cgroup_root *src_root = ss->root;
+ 		struct cgroup *scgrp = &src_root->cgrp;
+ 		struct cgroup_subsys_state *css = cgroup_css(scgrp, ss);
+-		struct css_set *cset, *cset_pos;
++		struct css_set *cset;
+ 		struct css_task_iter *it;
+ 
+ 		WARN_ON(!css || cgroup_css(dcgrp, ss));
+@@ -1843,17 +1882,20 @@
+ 		}
+ 
+ 		/* rebind */
+-		RCU_INIT_POINTER(scgrp->subsys[ssid], NULL);
+-		rcu_assign_pointer(dcgrp->subsys[ssid], css);
++		RCU_INIT_POINTER(*cgroup_subsys_ptr(scgrp, ssid), NULL);
++		rcu_assign_pointer(*cgroup_subsys_ptr(dcgrp, ssid), css);
+ 		ss->root = dst_root;
+ 
+ 		spin_lock_irq(&css_set_lock);
+ 		css->cgroup = dcgrp;
+-		WARN_ON(!list_empty(&dcgrp->e_csets[ss->id]));
+-		list_for_each_entry_safe(cset, cset_pos, &scgrp->e_csets[ss->id],
+-					 e_cset_node[ss->id]) {
+-			list_move_tail(&cset->e_cset_node[ss->id],
+-				       &dcgrp->e_csets[ss->id]);
++		WARN_ON(!list_empty(cgroup_e_csets_ptr(dcgrp, ss->id)));
++		{
++			struct list_head *l, *n;
++
++			list_for_each_safe(l, n, cgroup_e_csets_ptr(scgrp, ss->id)) {
++				cset = css_set_from_e_cset_node(l, ss->id);
++				list_move_tail(css_set_e_cset_node(cset, ss->id),
++				       cgroup_e_csets_ptr(dcgrp, ss->id));
+ 			/*
+ 			 * all css_sets of scgrp together in same order to dcgrp,
+ 			 * patch in-flight iterators to preserve correct iteration.
+@@ -1861,9 +1903,10 @@
+ 			 * finished when it->cset_pos meets it->cset_head, so only
+ 			 * update it->cset_head is enough here.
+ 			 */
+-			list_for_each_entry(it, &cset->task_iters, iters_node)
+-				if (it->cset_head == &scgrp->e_csets[ss->id])
+-					it->cset_head = &dcgrp->e_csets[ss->id];
++				list_for_each_entry(it, &cset->task_iters, iters_node)
++					if (it->cset_head == cgroup_e_csets_ptr(scgrp, ss->id))
++						it->cset_head = cgroup_e_csets_ptr(dcgrp, ss->id);
++			}
+ 		}
+ 		spin_unlock_irq(&css_set_lock);
+ 
+@@ -2060,7 +2103,7 @@
+ 	prev_cputime_init(&cgrp->prev_cputime);
+ 
+ 	for_each_subsys(ss, ssid)
+-		INIT_LIST_HEAD(&cgrp->e_csets[ssid]);
++		INIT_LIST_HEAD(cgroup_e_csets_ptr(cgrp, ssid));
+ 
+ 	init_waitqueue_head(&cgrp->offline_waitq);
+ 	INIT_WORK(&cgrp->release_agent_work, cgroup1_release_agent);
+@@ -2071,6 +2114,9 @@
+ 	struct cgroup_root *root = ctx->root;
+ 	struct cgroup *cgrp = &root->cgrp;
+ 
++	if (!cgrp->ext)
++		cgrp->ext = kzalloc(sizeof(*cgrp->ext), GFP_KERNEL);
++
+ 	INIT_LIST_HEAD_RCU(&root->root_list);
+ 	atomic_set(&root->nr_cgrps, 1);
+ 	cgrp->root = root;
+@@ -2569,9 +2615,10 @@
+ 			 * has its ->mg_dst_cset set.
+ 			 */
+ 			if (cset->mg_dst_cset)
+-				*dst_cssp = cset->mg_dst_cset->subsys[tset->ssid];
++				*dst_cssp = css_set_get_subsys(cset->mg_dst_cset,
++							       tset->ssid);
+ 			else
+-				*dst_cssp = cset->subsys[tset->ssid];
++				*dst_cssp = css_set_get_subsys(cset, tset->ssid);
+ 
+ 			return task;
+ 		}
+@@ -2866,7 +2913,8 @@
+ 			put_css_set(dst_cset);
+ 
+ 		for_each_subsys(ss, ssid)
+-			if (src_cset->subsys[ssid] != dst_cset->subsys[ssid])
++			if (css_set_get_subsys(src_cset, ssid) !=
++			    css_set_get_subsys(dst_cset, ssid))
+ 				mgctx->ss_mask |= 1 << ssid;
+ 	}
+ 
+@@ -3732,8 +3780,8 @@
+ 		if ((BIT(ssid) & cgrp_dfl_inhibit_ss_mask) ||
+ 		    (cgroup_subsys[ssid]->root !=  &cgrp_dfl_root))
+ 			continue;
+-		css = rcu_dereference_raw(cgroup->subsys[ssid]);
+-		dying_cnt[ssid] = cgroup->nr_dying_subsys[ssid];
++		css = rcu_dereference_raw(*cgroup_subsys_ptr(cgroup, ssid));
++		dying_cnt[ssid] = *cgroup_nr_dying_subsys_ptr(cgroup, ssid);
+ 		seq_printf(seq, "nr_subsys_%s %d\n", cgroup_subsys[ssid]->name,
+ 			   css ? (css->nr_descendants + 1) : 0);
+ 	}
+@@ -4298,6 +4346,11 @@
+ 		spin_unlock_irq(&cgroup_file_kn_lock);
+ 	}
+ 
++	if (cft->ss && (cgrp->root->flags & CGRP_ROOT_NOPREFIX) && !(cft->flags & CFTYPE_NO_PREFIX)) {
++				snprintf(name, CGROUP_FILE_NAME_MAX, "%s.%s", cft->ss->name, cft->name);
++				kernfs_create_link(cgrp->kn, name, kn);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -4851,7 +4904,7 @@
+ 	}
+ 
+ 	if (it->ss) {
+-		cset = container_of(l, struct css_set, e_cset_node[it->ss->id]);
++		cset = css_set_from_e_cset_node(l, it->ss->id);
+ 	} else {
+ 		link = list_entry(l, struct cgrp_cset_link, cset_link);
+ 		cset = link->cset;
+@@ -5016,7 +5069,7 @@
+ 	it->flags = flags;
+ 
+ 	if (CGROUP_HAS_SUBSYS_CONFIG && it->ss)
+-		it->cset_pos = &css->cgroup->e_csets[css->ss->id];
++		it->cset_pos = cgroup_e_csets_ptr(css->cgroup, css->ss->id);
+ 	else
+ 		it->cset_pos = &css->cgroup->cset_links;
+ 
+@@ -5474,6 +5527,7 @@
+ 			kernfs_put(cgrp->kn);
+ 			psi_cgroup_free(cgrp);
+ 			cgroup_rstat_exit(cgrp);
++			kfree(cgrp->ext);
+ 			kfree(cgrp);
+ 		} else {
+ 			/*
+@@ -5511,7 +5565,7 @@
+ 		if (ss->css_released)
+ 			ss->css_released(css);
+ 
+-		cgrp->nr_dying_subsys[ss->id]--;
++		(*cgroup_nr_dying_subsys_ptr(cgrp, ss->id))--;
+ 		/*
+ 		 * When a css is released and ready to be freed, its
+ 		 * nr_descendants must be zero. However, the corresponding
+@@ -5522,7 +5576,7 @@
+ 		WARN_ON_ONCE(css->nr_descendants);
+ 		parent_cgrp = cgroup_parent(cgrp);
+ 		while (parent_cgrp) {
+-			parent_cgrp->nr_dying_subsys[ss->id]--;
++			(*cgroup_nr_dying_subsys_ptr(parent_cgrp, ss->id))--;
+ 			parent_cgrp = cgroup_parent(parent_cgrp);
+ 		}
+ 	} else {
+@@ -5606,7 +5660,7 @@
+ 		ret = ss->css_online(css);
+ 	if (!ret) {
+ 		css->flags |= CSS_ONLINE;
+-		rcu_assign_pointer(css->cgroup->subsys[ss->id], css);
++		rcu_assign_pointer(*cgroup_subsys_ptr(css->cgroup, ss->id), css);
+ 
+ 		atomic_inc(&css->online_cnt);
+ 		if (css->parent) {
+@@ -5632,18 +5686,18 @@
+ 		ss->css_offline(css);
+ 
+ 	css->flags &= ~CSS_ONLINE;
+-	RCU_INIT_POINTER(css->cgroup->subsys[ss->id], NULL);
++	RCU_INIT_POINTER(*cgroup_subsys_ptr(css->cgroup, ss->id), NULL);
+ 
+ 	wake_up_all(&css->cgroup->offline_waitq);
+ 
+-	css->cgroup->nr_dying_subsys[ss->id]++;
++	(*cgroup_nr_dying_subsys_ptr(css->cgroup, ss->id))++;
+ 	/*
+ 	 * Parent css and cgroup cannot be freed until after the freeing
+ 	 * of child css, see css_free_rwork_fn().
+ 	 */
+ 	while ((css = css->parent)) {
+ 		css->nr_descendants--;
+-		css->cgroup->nr_dying_subsys[ss->id]++;
++		(*cgroup_nr_dying_subsys_ptr(css->cgroup, ss->id))++;
+ 	}
+ }
+ 
+@@ -5719,6 +5773,11 @@
+ 	cgrp = kzalloc(struct_size(cgrp, ancestors, (level + 1)), GFP_KERNEL);
+ 	if (!cgrp)
+ 		return ERR_PTR(-ENOMEM);
++	cgrp->ext = kzalloc(sizeof(*cgrp->ext), GFP_KERNEL);
++	if (!cgrp->ext) {
++		ret = -ENOMEM;
++		goto out_free_cgrp;
++	}
+ 
+ 	ret = percpu_ref_init(&cgrp->self.refcnt, css_release, 0, GFP_KERNEL);
+ 	if (ret)
+@@ -5821,6 +5880,7 @@
+ out_cancel_ref:
+ 	percpu_ref_exit(&cgrp->self.refcnt);
+ out_free_cgrp:
++	kfree(cgrp->ext);
+ 	kfree(cgrp);
+ 	return ERR_PTR(ret);
+ }
+@@ -6135,7 +6195,7 @@
+ 	 * pointer to this state - since the subsystem is
+ 	 * newly registered, all tasks and hence the
+ 	 * init_css_set is in the subsystem's root cgroup. */
+-	init_css_set.subsys[ss->id] = css;
++	css_set_set_subsys(&init_css_set, ss->id, css);
+ 
+ 	have_fork_callback |= (bool)ss->fork << ss->id;
+ 	have_exit_callback |= (bool)ss->exit << ss->id;
+@@ -6210,13 +6270,14 @@
+ 	get_user_ns(init_cgroup_ns.user_ns);
+ 
+ 	cgroup_lock();
++	init_css_set_ext.owner = &init_css_set;
+ 
+ 	/*
+ 	 * Add init_css_set to the hash table so that dfl_root can link to
+ 	 * it during init.
+ 	 */
+ 	hash_add(css_set_table, &init_css_set.hlist,
+-		 css_set_hash(init_css_set.subsys));
++		 css_set_hash_from_cset(&init_css_set));
+ 
+ 	BUG_ON(cgroup_setup_root(&cgrp_dfl_root, 0));
+ 
+@@ -6225,7 +6286,7 @@
+ 	for_each_subsys(ss, ssid) {
+ 		if (ss->early_init) {
+ 			struct cgroup_subsys_state *css =
+-				init_css_set.subsys[ss->id];
++				css_set_get_subsys(&init_css_set, ss->id);
+ 
+ 			css->id = cgroup_idr_alloc(&ss->css_idr, css, 1, 2,
+ 						   GFP_KERNEL);
+@@ -6234,8 +6295,8 @@
+ 			cgroup_init_subsys(ss, false);
+ 		}
+ 
+-		list_add_tail(&init_css_set.e_cset_node[ssid],
+-			      &cgrp_dfl_root.cgrp.e_csets[ssid]);
++		list_add_tail(css_set_e_cset_node(&init_css_set, ssid),
++			      cgroup_e_csets_ptr(&cgrp_dfl_root.cgrp, ssid));
+ 
+ 		/*
+ 		 * Setting dfl_root subsys_mask needs to consider the
+@@ -6270,17 +6331,17 @@
+ 		}
+ 
+ 		if (ss->bind)
+-			ss->bind(init_css_set.subsys[ssid]);
++			ss->bind(css_set_get_subsys(&init_css_set, ssid));
+ 
+ 		cgroup_lock();
+-		css_populate_dir(init_css_set.subsys[ssid]);
++		css_populate_dir(css_set_get_subsys(&init_css_set, ssid));
+ 		cgroup_unlock();
+ 	}
+ 
+ 	/* init_css_set.subsys[] has been updated, re-hash */
+ 	hash_del(&init_css_set.hlist);
+ 	hash_add(css_set_table, &init_css_set.hlist,
+-		 css_set_hash(init_css_set.subsys));
++		 css_set_hash_from_cset(&init_css_set));
+ 
+ 	WARN_ON(sysfs_create_mount_point(fs_kobj, "cgroup"));
+ 	WARN_ON(register_filesystem(&cgroup_fs_type));
+diff --git a/kernel/cgroup/cpuset.c b/kernel/cgroup/cpuset.c
+--- a/kernel/cgroup/cpuset.c
++++ b/kernel/cgroup/cpuset.c
+@@ -3523,7 +3523,7 @@
+  */
+ static int cpuset_can_fork(struct task_struct *task, struct css_set *cset)
+ {
+-	struct cpuset *cs = css_cs(cset->subsys[cpuset_cgrp_id]);
++	struct cpuset *cs = css_cs(css_set_get_subsys(cset, cpuset_cgrp_id));
+ 	bool same_cs;
+ 	int ret;
+ 
+@@ -3562,7 +3562,7 @@
+ 
+ static void cpuset_cancel_fork(struct task_struct *task, struct css_set *cset)
+ {
+-	struct cpuset *cs = css_cs(cset->subsys[cpuset_cgrp_id]);
++	struct cpuset *cs = css_cs(css_set_get_subsys(cset, cpuset_cgrp_id));
+ 	bool same_cs;
+ 
+ 	rcu_read_lock();
+diff --git a/kernel/cgroup/debug.c b/kernel/cgroup/debug.c
+--- a/kernel/cgroup/debug.c
++++ b/kernel/cgroup/debug.c
+@@ -61,7 +61,7 @@
+ 	 * Print the css'es stored in the current css_set.
+ 	 */
+ 	for_each_subsys(ss, i) {
+-		css = cset->subsys[ss->id];
++		css = css_set_get_subsys(cset, ss->id);
+ 		if (!css)
+ 			continue;
+ 		seq_printf(seq, "%2d: %-4s\t- %p[%d]\n", ss->id, ss->name,
+@@ -214,7 +214,7 @@
+ 		return -ENODEV;
+ 
+ 	for_each_subsys(ss, i) {
+-		css = rcu_dereference_check(cgrp->subsys[ss->id], true);
++		css = rcu_dereference_check(*cgroup_subsys_ptr(cgrp, ss->id), true);
+ 		if (!css)
+ 			continue;
+ 
+diff --git a/kernel/cgroup/pids.c b/kernel/cgroup/pids.c
+--- a/kernel/cgroup/pids.c
++++ b/kernel/cgroup/pids.c
+@@ -275,7 +275,7 @@
+ 	struct pids_cgroup *pids, *pids_over_limit;
+ 	int err;
+ 
+-	pids = css_pids(cset->subsys[pids_cgrp_id]);
++	pids = css_pids(css_set_get_subsys(cset, pids_cgrp_id));
+ 	err = pids_try_charge(pids, 1, &pids_over_limit);
+ 	if (err)
+ 		pids_event(pids, pids_over_limit);
+@@ -287,7 +287,7 @@
+ {
+ 	struct pids_cgroup *pids;
+ 
+-	pids = css_pids(cset->subsys[pids_cgrp_id]);
++	pids = css_pids(css_set_get_subsys(cset, pids_cgrp_id));
+ 	pids_uncharge(pids, 1);
+ }
+ 
+diff --git a/kernel/events/core.c b/kernel/events/core.c
+--- a/kernel/events/core.c
++++ b/kernel/events/core.c
+@@ -755,11 +755,11 @@
+ 	struct perf_cpu_context *cpuctx = this_cpu_ptr(&perf_cpu_context);
+ 
+ 	/* @event doesn't care about cgroup */
+-	if (!event->cgrp)
++	if (!get_cgrp(event))
+ 		return true;
+ 
+ 	/* wants specific cgroup scope but @cpuctx isn't associated with any */
+-	if (!cpuctx->cgrp)
++	if (!perf_cpu_ctx_get_cgrp(cpuctx))
+ 		return false;
+ 
+ 	/*
+@@ -768,26 +768,26 @@
+ 	 * cgroup is a descendant of @event's (the test covers identity
+ 	 * case), it's a match.
+ 	 */
+-	return cgroup_is_descendant(cpuctx->cgrp->css.cgroup,
+-				    event->cgrp->css.cgroup);
++	return cgroup_is_descendant(perf_cpu_ctx_get_cgrp(cpuctx)->css.cgroup,
++				    get_cgrp(event)->css.cgroup);
+ }
+ 
+ static inline void perf_detach_cgroup(struct perf_event *event)
+ {
+-	css_put(&event->cgrp->css);
+-	event->cgrp = NULL;
++	css_put(&get_cgrp(event)->css);
++	set_cgrp(event, NULL);
+ }
+ 
+ static inline int is_cgroup_event(struct perf_event *event)
+ {
+-	return event->cgrp != NULL;
++	return get_cgrp(event) != NULL;
+ }
+ 
+ static inline u64 perf_cgroup_event_time(struct perf_event *event)
+ {
+ 	struct perf_cgroup_info *t;
+ 
+-	t = per_cpu_ptr(event->cgrp->info, event->cpu);
++	t = per_cpu_ptr(get_cgrp(event)->info, event->cpu);
+ 	return t->time;
+ }
+ 
+@@ -795,7 +795,7 @@
+ {
+ 	struct perf_cgroup_info *t;
+ 
+-	t = per_cpu_ptr(event->cgrp->info, event->cpu);
++	t = per_cpu_ptr(get_cgrp(event)->info, event->cpu);//很丑，但是google逼的
+ 	if (!__load_acquire(&t->active))
+ 		return t->time;
+ 	now += READ_ONCE(t->timeoffset);
+@@ -815,7 +815,7 @@
+ 
+ static inline void update_cgrp_time_from_cpuctx(struct perf_cpu_context *cpuctx, bool final)
+ {
+-	struct perf_cgroup *cgrp = cpuctx->cgrp;
++	struct perf_cgroup *cgrp = perf_cpu_ctx_get_cgrp(cpuctx);
+ 	struct cgroup_subsys_state *css;
+ 	struct perf_cgroup_info *info;
+ 
+@@ -844,7 +844,7 @@
+ 	if (!is_cgroup_event(event))
+ 		return;
+ 
+-	info = this_cpu_ptr(event->cgrp->info);
++	info = this_cpu_ptr(get_cgrp(event)->info);
+ 	/*
+ 	 * Do not update time when cgroup is not active
+ 	 */
+@@ -856,7 +856,7 @@
+ perf_cgroup_set_timestamp(struct perf_cpu_context *cpuctx)
+ {
+ 	struct perf_event_context *ctx = &cpuctx->ctx;
+-	struct perf_cgroup *cgrp = cpuctx->cgrp;
++	struct perf_cgroup *cgrp = perf_cpu_ctx_get_cgrp(cpuctx);
+ 	struct perf_cgroup_info *info;
+ 	struct cgroup_subsys_state *css;
+ 
+@@ -890,13 +890,13 @@
+ 	 * cpuctx->cgrp is set when the first cgroup event enabled,
+ 	 * and is cleared when the last cgroup event disabled.
+ 	 */
+-	if (READ_ONCE(cpuctx->cgrp) == NULL)
++	if (perf_cpu_ctx_get_cgrp_readonce(cpuctx) == NULL)
+ 		return;
+ 
+ 	WARN_ON_ONCE(cpuctx->ctx.nr_cgroups == 0);
+ 
+ 	cgrp = perf_cgroup_from_task(task, NULL);
+-	if (READ_ONCE(cpuctx->cgrp) == cgrp)
++	if (perf_cpu_ctx_get_cgrp_readonce(cpuctx) == cgrp)
+ 		return;
+ 
+ 	perf_ctx_lock(cpuctx, cpuctx->task_ctx);
+@@ -908,7 +908,7 @@
+ 	 * to update_cgrp_time_from_cpuctx() in
+ 	 * ctx_sched_out()
+ 	 */
+-	cpuctx->cgrp = cgrp;
++	perf_cpu_ctx_set_cgrp(cpuctx, cgrp);
+ 	/*
+ 	 * set cgrp before ctxsw in to allow
+ 	 * perf_cgroup_set_timestamp() in ctx_sched_in()
+@@ -985,14 +985,14 @@
+ 		goto out;
+ 
+ 	cgrp = container_of(css, struct perf_cgroup, css);
+-	event->cgrp = cgrp;
++	set_cgrp(event, cgrp);
+ 
+ 	/*
+ 	 * all events in a group must monitor
+ 	 * the same cgroup because a task belongs
+ 	 * to only one perf cgroup at a time
+ 	 */
+-	if (group_leader && group_leader->cgrp != cgrp) {
++	if (group_leader && get_cgrp(group_leader) != cgrp) {
+ 		perf_detach_cgroup(event);
+ 		ret = -EINVAL;
+ 	}
+@@ -1019,8 +1019,7 @@
+ 
+ 	if (ctx->nr_cgroups++)
+ 		return;
+-
+-	cpuctx->cgrp = perf_cgroup_from_task(current, ctx);
++	perf_cpu_ctx_set_cgrp(cpuctx, perf_cgroup_from_task(current, ctx));
+ }
+ 
+ static inline void
+@@ -1042,7 +1041,7 @@
+ 	if (--ctx->nr_cgroups)
+ 		return;
+ 
+-	cpuctx->cgrp = NULL;
++	perf_cpu_ctx_set_cgrp(cpuctx, NULL);
+ }
+ 
+ #else /* !CONFIG_CGROUP_PERF */
+@@ -1600,8 +1599,8 @@
+ 	struct cgroup *cgroup = NULL;
+ 
+ #ifdef CONFIG_CGROUP_PERF
+-	if (event->cgrp)
+-		cgroup = event->cgrp->css.cgroup;
++	if (get_cgrp(event))
++		cgroup = get_cgrp(event)->css.cgroup;
+ #endif
+ 
+ 	return cgroup;
+@@ -2882,7 +2881,7 @@
+ 		 */
+ 		struct perf_cgroup *cgrp = perf_cgroup_from_task(current, ctx);
+ 		reprogram = cgroup_is_descendant(cgrp->css.cgroup,
+-					event->cgrp->css.cgroup);
++					get_cgrp(event)->css.cgroup);
+ 	}
+ #endif
+ 
+@@ -3854,8 +3853,8 @@
+ 		lockdep_assert_held(&cpuctx->ctx.lock);
+ 
+ #ifdef CONFIG_CGROUP_PERF
+-		if (cpuctx->cgrp)
+-			css = &cpuctx->cgrp->css;
++		if (perf_cpu_ctx_get_cgrp(cpuctx))
++			css = &perf_cpu_ctx_get_cgrp(cpuctx)->css;
+ #endif
+ 	} else {
+ 		event_heap = (struct perf_event_min_heap){
+diff --git a/kernel/module/version.c b/kernel/module/version.c
+--- a/kernel/module/version.c
++++ b/kernel/module/version.c
+@@ -69,7 +69,7 @@
+ 
+ bad_version:
+ 	pr_warn("%s: disagrees about version of symbol %s\n", info->name, symname);
+-	return 0;
++	return 1;
+ }
+ 
+ int check_modstruct_version(const struct load_info *info,
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -5310,7 +5310,7 @@
+ #ifdef CONFIG_CGROUP_SCHED
+ 	if (1) {
+ 		struct task_group *tg;
+-		tg = container_of(kargs->cset->subsys[cpu_cgrp_id],
++		tg = container_of(css_set_get_subsys(kargs->cset, cpu_cgrp_id),
+ 				  struct task_group, css);
+ 		tg = autogroup_task_group(p, tg);
+ 		p->sched_task_group = tg;
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -265,7 +265,7 @@
+ 		goto frame_finish;
+ #endif
+ 
+-	e = rcu_dereference(net->nf.hooks_bridge[NF_BR_PRE_ROUTING]);
++	e = rcu_dereference(net->nf.additional_info->hooks_bridge[NF_BR_PRE_ROUTING]);
+ 	if (!e)
+ 		goto frame_finish;
+ 
+diff --git a/net/bridge/br_netfilter_hooks.c b/net/bridge/br_netfilter_hooks.c
+--- a/net/bridge/br_netfilter_hooks.c
++++ b/net/bridge/br_netfilter_hooks.c
+@@ -1165,7 +1165,7 @@
+ 	unsigned int i;
+ 	int ret;
+ 
+-	e = rcu_dereference(net->nf.hooks_bridge[hook]);
++	e = rcu_dereference(net->nf.additional_info->hooks_bridge[hook]);
+ 	if (!e)
+ 		return okfn(net, sk, skb);
+ 
+diff --git a/net/core/net_namespace.c b/net/core/net_namespace.c
+--- a/net/core/net_namespace.c
++++ b/net/core/net_namespace.c
+@@ -421,11 +421,15 @@
+ 	net = kmem_cache_zalloc(net_cachep, GFP_KERNEL);
+ 	if (!net)
+ 		goto out_free;
++	net->ext = kzalloc(sizeof(*net->ext), GFP_KERNEL);
++	if (!net->ext)
++		goto out_free_net;
++	net->ext->net = net;
+ 
+ #ifdef CONFIG_KEYS
+ 	net->key_domain = kzalloc(sizeof(struct key_tag), GFP_KERNEL);
+ 	if (!net->key_domain)
+-		goto out_free_2;
++		goto out_free_ext;
+ 	refcount_set(&net->key_domain->usage, 1);
+ #endif
+ 
+@@ -434,7 +438,15 @@
+ 	return net;
+ 
+ #ifdef CONFIG_KEYS
+-out_free_2:
++out_free_ext:
++	kfree(net->ext);
++out_free_net:
++	kmem_cache_free(net_cachep, net);
++	net = NULL;
++#else
++out_free_ext:
++	kfree(net->ext);
++out_free_net:
+ 	kmem_cache_free(net_cachep, net);
+ 	net = NULL;
+ #endif
+@@ -462,6 +474,7 @@
+ {
+ 	if (refcount_dec_and_test(&net->passive)) {
+ 		kfree(rcu_access_pointer(net->gen));
++		kfree(net->ext);
+ 
+ 		/* There should not be any trackers left there. */
+ 		ref_tracker_dir_exit(&net->notrefcnt_tracker);
+@@ -1199,6 +1212,10 @@
+ 		panic("Could not allocate generic netns");
+ 
+ 	rcu_assign_pointer(init_net.gen, ng);
++	init_net.ext = kzalloc(sizeof(*init_net.ext), GFP_KERNEL);
++	if (!init_net.ext)
++		panic("Could not allocate init_net ext");
++	init_net.ext->net = &init_net;
+ 
+ #ifdef CONFIG_KEYS
+ 	init_net.key_domain = &init_net_key_domain;
+diff --git a/net/ipv6/ip6_output.c b/net/ipv6/ip6_output.c
+--- a/net/ipv6/ip6_output.c
++++ b/net/ipv6/ip6_output.c
+@@ -1091,7 +1091,7 @@
+ 	 */
+ 	if (ip6_rt_check(&rt->rt6i_dst, &fl6->daddr, np->daddr_cache) ||
+ #ifdef CONFIG_IPV6_SUBTREES
+-	    ip6_rt_check(&rt->rt6i_src, &fl6->saddr, np->saddr_cache) ||
++	    ip6_rt_check(&rt->rt6i_src, &fl6->saddr, hack_saddr_cache(np)) ||
+ #endif
+ 	   (fl6->flowi6_oif && fl6->flowi6_oif != dst->dev->ifindex)) {
+ 		dst_release(dst);
+diff --git a/net/mpls/af_mpls.c b/net/mpls/af_mpls.c
+--- a/net/mpls/af_mpls.c
++++ b/net/mpls/af_mpls.c
+@@ -79,9 +79,9 @@
+ {
+ 	struct mpls_route *rt = NULL;
+ 
+-	if (index < net->mpls.platform_labels) {
++	if (index < net_mpls(net).platform_labels) {
+ 		struct mpls_route __rcu **platform_label =
+-			rcu_dereference(net->mpls.platform_label);
++			rcu_dereference(net_mpls(net).platform_label);
+ 		rt = rcu_dereference(platform_label[index]);
+ 	}
+ 	return rt;
+@@ -302,7 +302,7 @@
+ 		 */
+ 		if (rt->rt_ttl_propagate == MPLS_TTL_PROP_ENABLED ||
+ 		    (rt->rt_ttl_propagate == MPLS_TTL_PROP_DEFAULT &&
+-		     net->mpls.ip_ttl_propagate))
++		     net_mpls(net).ip_ttl_propagate))
+ 			new_ttl = dec.ttl;
+ 		else
+ 			new_ttl = hdr4->ttl ? hdr4->ttl - 1 : 0;
+@@ -324,7 +324,7 @@
+ 		 */
+ 		if (rt->rt_ttl_propagate == MPLS_TTL_PROP_ENABLED ||
+ 		    (rt->rt_ttl_propagate == MPLS_TTL_PROP_DEFAULT &&
+-		     net->mpls.ip_ttl_propagate))
++		     net_mpls(net).ip_ttl_propagate))
+ 			hdr6->hop_limit = dec.ttl;
+ 		else if (hdr6->hop_limit)
+ 			hdr6->hop_limit = hdr6->hop_limit - 1;
+@@ -559,7 +559,7 @@
+ 
+ 	ASSERT_RTNL();
+ 
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
+ 	rt = rtnl_dereference(platform_label[index]);
+ 	rcu_assign_pointer(platform_label[index], new);
+ 
+@@ -575,8 +575,8 @@
+ 	size_t platform_labels;
+ 	unsigned index;
+ 
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
+-	platform_labels = net->mpls.platform_labels;
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
++	platform_labels = net_mpls(net).platform_labels;
+ 	for (index = MPLS_LABEL_FIRST_UNRESERVED; index < platform_labels;
+ 	     index++) {
+ 		if (!rtnl_dereference(platform_label[index]))
+@@ -950,13 +950,13 @@
+ 	}
+ 
+ 	/* The full 20 bit range may not be supported. */
+-	if (is_ok && *index >= net->mpls.platform_labels) {
++	if (is_ok && *index >= net_mpls(net).platform_labels) {
+ 		NL_SET_ERR_MSG(extack,
+ 			       "Label >= configured maximum in platform_labels");
+ 		is_ok = false;
+ 	}
+ 
+-	*index = array_index_nospec(*index, net->mpls.platform_labels);
++	*index = array_index_nospec(*index, net_mpls(net).platform_labels);
+ 	return is_ok;
+ }
+ 
+@@ -991,7 +991,7 @@
+ 	}
+ 
+ 	err = -EEXIST;
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
+ 	old = rtnl_dereference(platform_label[index]);
+ 	if ((cfg->rc_nlflags & NLM_F_EXCL) && old)
+ 		goto errout;
+@@ -1485,8 +1485,8 @@
+ 	struct net *net = dev_net(dev);
+ 	unsigned index;
+ 
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
+-	for (index = 0; index < net->mpls.platform_labels; index++) {
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
++	for (index = 0; index < net_mpls(net).platform_labels; index++) {
+ 		struct mpls_route *rt = rtnl_dereference(platform_label[index]);
+ 		bool nh_del = false;
+ 		u8 alive = 0;
+@@ -1562,8 +1562,8 @@
+ 	unsigned index;
+ 	u8 alive;
+ 
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
+-	for (index = 0; index < net->mpls.platform_labels; index++) {
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
++	for (index = 0; index < net_mpls(net).platform_labels; index++) {
+ 		struct mpls_route *rt = rtnl_dereference(platform_label[index]);
+ 
+ 		if (!rt)
+@@ -2190,8 +2190,8 @@
+ 	if (index < MPLS_LABEL_FIRST_UNRESERVED)
+ 		index = MPLS_LABEL_FIRST_UNRESERVED;
+ 
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
+-	platform_labels = net->mpls.platform_labels;
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
++	platform_labels = net_mpls(net).platform_labels;
+ 
+ 	if (filter.filter_set)
+ 		flags |= NLM_F_DUMP_FILTERED;
+@@ -2548,8 +2548,8 @@
+ 
+ 	rtnl_lock();
+ 	/* Remember the original table */
+-	old = rtnl_dereference(net->mpls.platform_label);
+-	old_limit = net->mpls.platform_labels;
++	old = rtnl_dereference(net_mpls(net).platform_label);
++	old_limit = net_mpls(net).platform_labels;
+ 
+ 	/* Free any labels beyond the new table */
+ 	for (index = limit; index < old_limit; index++)
+@@ -2576,8 +2576,8 @@
+ 	}
+ 
+ 	/* Update the global pointers */
+-	net->mpls.platform_labels = limit;
+-	rcu_assign_pointer(net->mpls.platform_label, labels);
++	net_mpls(net).platform_labels = limit;
++	rcu_assign_pointer(net_mpls(net).platform_label, labels);
+ 
+ 	rtnl_unlock();
+ 
+@@ -2602,7 +2602,7 @@
+ 				void *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	struct net *net = table->data;
+-	int platform_labels = net->mpls.platform_labels;
++	int platform_labels = net_mpls(net).platform_labels;
+ 	int ret;
+ 	struct ctl_table tmp = {
+ 		.procname	= table->procname,
+@@ -2622,7 +2622,7 @@
+ }
+ 
+ #define MPLS_NS_SYSCTL_OFFSET(field)		\
+-	(&((struct net *)0)->field)
++	(&((struct netns_mpls *)0)->field)
+ 
+ static const struct ctl_table mpls_table[] = {
+ 	{
+@@ -2634,7 +2634,7 @@
+ 	},
+ 	{
+ 		.procname	= "ip_ttl_propagate",
+-		.data		= MPLS_NS_SYSCTL_OFFSET(mpls.ip_ttl_propagate),
++		.data		= MPLS_NS_SYSCTL_OFFSET(ip_ttl_propagate),
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -2643,7 +2643,7 @@
+ 	},
+ 	{
+ 		.procname	= "default_ttl",
+-		.data		= MPLS_NS_SYSCTL_OFFSET(mpls.default_ttl),
++		.data		= MPLS_NS_SYSCTL_OFFSET(default_ttl),
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -2658,10 +2658,10 @@
+ 	struct ctl_table *table;
+ 	int i;
+ 
+-	net->mpls.platform_labels = 0;
+-	net->mpls.platform_label = NULL;
+-	net->mpls.ip_ttl_propagate = 1;
+-	net->mpls.default_ttl = 255;
++	net_mpls(net).platform_labels = 0;
++	net_mpls(net).platform_label = NULL;
++	net_mpls(net).ip_ttl_propagate = 1;
++	net_mpls(net).default_ttl = 255;
+ 
+ 	table = kmemdup(mpls_table, sizeof(mpls_table), GFP_KERNEL);
+ 	if (table == NULL)
+@@ -2671,11 +2671,11 @@
+ 	 * the mdev at this point, so make them absolute.
+ 	 */
+ 	for (i = 0; i < table_size; i++)
+-		table[i].data = (char *)net + (uintptr_t)table[i].data;
++		table[i].data = (char *)&net_mpls(net) + (uintptr_t)table[i].data;
+ 
+-	net->mpls.ctl = register_net_sysctl_sz(net, "net/mpls", table,
++	net_mpls(net).ctl = register_net_sysctl_sz(net, "net/mpls", table,
+ 					       table_size);
+-	if (net->mpls.ctl == NULL) {
++	if (net_mpls(net).ctl == NULL) {
+ 		kfree(table);
+ 		return -ENOMEM;
+ 	}
+@@ -2690,8 +2690,8 @@
+ 	const struct ctl_table *table;
+ 	unsigned int index;
+ 
+-	table = net->mpls.ctl->ctl_table_arg;
+-	unregister_net_sysctl_table(net->mpls.ctl);
++	table = net_mpls(net).ctl->ctl_table_arg;
++	unregister_net_sysctl_table(net_mpls(net).ctl);
+ 	kfree(table);
+ 
+ 	/* An rcu grace period has passed since there was a device in
+@@ -2704,8 +2704,8 @@
+ 	 * freeing the platform_label table.
+ 	 */
+ 	rtnl_lock();
+-	platform_label = rtnl_dereference(net->mpls.platform_label);
+-	platform_labels = net->mpls.platform_labels;
++	platform_label = rtnl_dereference(net_mpls(net).platform_label);
++	platform_labels = net_mpls(net).platform_labels;
+ 	for (index = 0; index < platform_labels; index++) {
+ 		struct mpls_route *rt = rtnl_dereference(platform_label[index]);
+ 		RCU_INIT_POINTER(platform_label[index], NULL);
+diff --git a/net/mpls/mpls_iptunnel.c b/net/mpls/mpls_iptunnel.c
+--- a/net/mpls/mpls_iptunnel.c
++++ b/net/mpls/mpls_iptunnel.c
+@@ -77,8 +77,8 @@
+ 		if (tun_encap_info->ttl_propagate == MPLS_TTL_PROP_DISABLED)
+ 			ttl = tun_encap_info->default_ttl;
+ 		else if (tun_encap_info->ttl_propagate == MPLS_TTL_PROP_DEFAULT &&
+-			 !net->mpls.ip_ttl_propagate)
+-			ttl = net->mpls.default_ttl;
++			 !net_mpls(net).ip_ttl_propagate)
++			ttl = net_mpls(net).default_ttl;
+ 		else
+ 			ttl = ip_hdr(skb)->ttl;
+ 		rt = dst_rtable(dst);
+@@ -86,8 +86,8 @@
+ 		if (tun_encap_info->ttl_propagate == MPLS_TTL_PROP_DISABLED)
+ 			ttl = tun_encap_info->default_ttl;
+ 		else if (tun_encap_info->ttl_propagate == MPLS_TTL_PROP_DEFAULT &&
+-			 !net->mpls.ip_ttl_propagate)
+-			ttl = net->mpls.default_ttl;
++			 !net_mpls(net).ip_ttl_propagate)
++			ttl = net_mpls(net).default_ttl;
+ 		else
+ 			ttl = ipv6_hdr(skb)->hop_limit;
+ 		rt6 = dst_rt6_info(dst);
+diff --git a/net/netfilter/core.c b/net/netfilter/core.c
+--- a/net/netfilter/core.c
++++ b/net/netfilter/core.c
+@@ -21,6 +21,7 @@
+ #include <linux/proc_fs.h>
+ #include <linux/mutex.h>
+ #include <linux/mm.h>
++#include <linux/slab.h>
+ #include <linux/rcupdate.h>
+ #include <net/net_namespace.h>
+ #include <net/netfilter/nf_queue.h>
+@@ -290,9 +291,9 @@
+ #endif
+ #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+ 	case NFPROTO_BRIDGE:
+-		if (WARN_ON_ONCE(ARRAY_SIZE(net->nf.hooks_bridge) <= hooknum))
++		if (WARN_ON_ONCE(ARRAY_SIZE(net->nf.additional_info->hooks_bridge) <= hooknum))
+ 			return NULL;
+-		return net->nf.hooks_bridge + hooknum;
++		return net->nf.additional_info->hooks_bridge + hooknum;
+ #endif
+ #ifdef CONFIG_NETFILTER_INGRESS
+ 	case NFPROTO_INET:
+@@ -779,7 +780,12 @@
+ 	__netfilter_net_init(net->nf.hooks_arp, ARRAY_SIZE(net->nf.hooks_arp));
+ #endif
+ #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+-	__netfilter_net_init(net->nf.hooks_bridge, ARRAY_SIZE(net->nf.hooks_bridge));
++	net->nf.additional_info = kzalloc(sizeof(*net->nf.additional_info),
++					 GFP_KERNEL_ACCOUNT);
++	if (!net->nf.additional_info)
++		return -ENOMEM;
++	__netfilter_net_init(net->nf.additional_info->hooks_bridge,
++			     ARRAY_SIZE(net->nf.additional_info->hooks_bridge));
+ #endif
+ #ifdef CONFIG_PROC_FS
+ 	net->nf.proc_netfilter = proc_net_mkdir(net, "netfilter",
+@@ -788,6 +794,11 @@
+ 		if (!net_eq(net, &init_net))
+ 			pr_err("cannot create netfilter proc entry");
+ 
++#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
++		kfree(net->nf.additional_info);
++		net->nf.additional_info = NULL;
++#endif
++
+ 		return -ENOMEM;
+ 	}
+ #endif
+@@ -798,6 +809,10 @@
+ static void __net_exit netfilter_net_exit(struct net *net)
+ {
+ 	remove_proc_entry("netfilter", net->proc_net);
++#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
++	kfree(net->nf.additional_info);
++	net->nf.additional_info = NULL;
++#endif
+ }
+ 
+ static struct pernet_operations netfilter_net_ops = {
+diff --git a/net/netfilter/ipvs/ip_vs_core.c b/net/netfilter/ipvs/ip_vs_core.c
+--- a/net/netfilter/ipvs/ip_vs_core.c
++++ b/net/netfilter/ipvs/ip_vs_core.c
+@@ -2300,7 +2300,7 @@
+ 	/* Counters used for creating unique names */
+ 	ipvs->gen = atomic_read(&ipvs_netns_cnt);
+ 	atomic_inc(&ipvs_netns_cnt);
+-	net->ipvs = ipvs;
++	net_ipvs_ptr(net) = ipvs;
+ 
+ 	if (ip_vs_estimator_net_init(ipvs) < 0)
+ 		goto estimator_fail;
+@@ -2336,7 +2336,7 @@
+ control_fail:
+ 	ip_vs_estimator_net_cleanup(ipvs);
+ estimator_fail:
+-	net->ipvs = NULL;
++	net_ipvs_ptr(net) = NULL;
+ 	return -ENOMEM;
+ }
+ 
+@@ -2354,7 +2354,7 @@
+ 		ip_vs_control_net_cleanup(ipvs);
+ 		ip_vs_estimator_net_cleanup(ipvs);
+ 		IP_VS_DBG(2, "ipvs netns %d released\n", ipvs->gen);
+-		net->ipvs = NULL;
++		net_ipvs_ptr(net) = NULL;
+ 	}
+ }
+ 
+diff --git a/net/netfilter/nf_hooks_lwtunnel.c b/net/netfilter/nf_hooks_lwtunnel.c
+--- a/net/netfilter/nf_hooks_lwtunnel.c
++++ b/net/netfilter/nf_hooks_lwtunnel.c
+@@ -83,7 +83,7 @@
+ 	if (!hdr)
+ 		goto err_reg;
+ 
+-	net->nf.nf_lwtnl_dir_header = hdr;
++	net->nf.additional_info->nf_lwtnl_dir_header = hdr;
+ 
+ 	return 0;
+ err_reg:
+@@ -97,8 +97,8 @@
+ {
+ 	const struct ctl_table *table;
+ 
+-	table = net->nf.nf_lwtnl_dir_header->ctl_table_arg;
+-	unregister_net_sysctl_table(net->nf.nf_lwtnl_dir_header);
++	table = net->nf.additional_info->nf_lwtnl_dir_header->ctl_table_arg;
++	unregister_net_sysctl_table(net->nf.additional_info->nf_lwtnl_dir_header);
+ 	if (!net_eq(net, &init_net))
+ 		kfree(table);
+ }
+diff --git a/net/netfilter/nfnetlink_hook.c b/net/netfilter/nfnetlink_hook.c
+--- a/net/netfilter/nfnetlink_hook.c
++++ b/net/netfilter/nfnetlink_hook.c
+@@ -265,9 +265,9 @@
+ 		break;
+ 	case NFPROTO_BRIDGE:
+ #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+-		if (hook >= ARRAY_SIZE(net->nf.hooks_bridge))
++		if (hook >= ARRAY_SIZE(net->nf.additional_info->hooks_bridge))
+ 			return ERR_PTR(-EINVAL);
+-		hook_head = rcu_dereference(net->nf.hooks_bridge[hook]);
++		hook_head = rcu_dereference(net->nf.additional_info->hooks_bridge[hook]);
+ #endif
+ 		break;
+ #if defined(CONFIG_NETFILTER_INGRESS) || defined(CONFIG_NETFILTER_EGRESS)
+diff --git a/net/netfilter/nfnetlink_queue.c b/net/netfilter/nfnetlink_queue.c
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -257,7 +257,7 @@
+ 	switch (pf) {
+ #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+ 	case NFPROTO_BRIDGE:
+-		return rcu_dereference(net->nf.hooks_bridge[hooknum]);
++		return rcu_dereference(net->nf.additional_info->hooks_bridge[hooknum]);
+ #endif
+ 	case NFPROTO_IPV4:
+ 		return rcu_dereference(net->nf.hooks_ipv4[hooknum]);
+diff --git a/net/netfilter/nf_tables_api.c b/net/netfilter/nf_tables_api.c
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -10463,7 +10463,7 @@
+ 	gc_seq = nft_gc_seq_begin(nft_net);
+ 
+ 	/* step 3. Start new generation, rules_gen_X now in use. */
+-	net->nft.gencursor = nft_gencursor_next(net);
++	net_nft(net).gencursor = nft_gencursor_next(net);
+ 
+ 	list_for_each_entry_safe(trans, next, &nft_net->commit_list, list) {
+ 		struct nft_table *table = trans->table;
+diff --git a/net/netfilter/nf_tables_core.c b/net/netfilter/nf_tables_core.c
+--- a/net/netfilter/nf_tables_core.c
++++ b/net/netfilter/nf_tables_core.c
+@@ -259,7 +259,7 @@
+ 	struct nft_regs regs;
+ 	unsigned int stackptr = 0;
+ 	struct nft_jumpstack jumpstack[NFT_JUMP_STACK_SIZE];
+-	bool genbit = READ_ONCE(net->nft.gencursor);
++	bool genbit = READ_ONCE(net_nft(net).gencursor);
+ 	struct nft_rule_blob *blob;
+ 	struct nft_traceinfo info;
+ 
+diff --git a/net/sched/act_mpls.c b/net/sched/act_mpls.c
+--- a/net/sched/act_mpls.c
++++ b/net/sched/act_mpls.c
+@@ -255,8 +255,8 @@
+ 		/* Push needs a TTL - if not specified, set a default value. */
+ 		if (!tb[TCA_MPLS_TTL]) {
+ #if IS_ENABLED(CONFIG_MPLS)
+-			mpls_ttl = net->mpls.default_ttl ?
+-				   net->mpls.default_ttl : ACT_MPLS_TTL_DEFAULT;
++			mpls_ttl = net_mpls(net).default_ttl ?
++				   net_mpls(net).default_ttl : ACT_MPLS_TTL_DEFAULT;
+ #else
+ 			mpls_ttl = ACT_MPLS_TTL_DEFAULT;
+ #endif
+diff --git a/net/sctp/associola.c b/net/sctp/associola.c
+--- a/net/sctp/associola.c
++++ b/net/sctp/associola.c
+@@ -1457,7 +1457,7 @@
+ 	case SCTP_STATE_SHUTDOWN_SENT:
+ 		if ((asoc->rwnd > asoc->a_rwnd) &&
+ 		    ((asoc->rwnd - asoc->a_rwnd) >= max_t(__u32,
+-			   (asoc->base.sk->sk_rcvbuf >> net->sctp.rwnd_upd_shift),
++			   (asoc->base.sk->sk_rcvbuf >> net_sctp(net).rwnd_upd_shift),
+ 			   asoc->pathmtu)))
+ 			return true;
+ 		break;
+diff --git a/net/sctp/bind_addr.c b/net/sctp/bind_addr.c
+--- a/net/sctp/bind_addr.c
++++ b/net/sctp/bind_addr.c
+@@ -521,7 +521,7 @@
+ 	 * Address scoping can be selectively controlled via sysctl
+ 	 * option
+ 	 */
+-	switch (net->sctp.scope_policy) {
++	switch (net_sctp(net).scope_policy) {
+ 	case SCTP_SCOPE_POLICY_DISABLE:
+ 		return 1;
+ 	case SCTP_SCOPE_POLICY_ENABLE:
+diff --git a/net/sctp/endpointola.c b/net/sctp/endpointola.c
+--- a/net/sctp/endpointola.c
++++ b/net/sctp/endpointola.c
+@@ -49,8 +49,8 @@
+ 	if (!ep->digest)
+ 		return NULL;
+ 
+-	ep->asconf_enable = net->sctp.addip_enable;
+-	ep->auth_enable = net->sctp.auth_enable;
++	ep->asconf_enable = net_sctp(net).addip_enable;
++	ep->auth_enable = net_sctp(net).auth_enable;
+ 	if (ep->auth_enable) {
+ 		if (sctp_auth_init(ep, gfp))
+ 			goto nomem;
+@@ -81,14 +81,14 @@
+ 	INIT_LIST_HEAD(&ep->asocs);
+ 
+ 	/* Use SCTP specific send buffer space queues.  */
+-	ep->sndbuf_policy = net->sctp.sndbuf_policy;
++	ep->sndbuf_policy = net_sctp(net).sndbuf_policy;
+ 
+ 	sk->sk_data_ready = sctp_data_ready;
+ 	sk->sk_write_space = sctp_write_space;
+ 	sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+ 
+ 	/* Get the receive buffer policy for this endpoint */
+-	ep->rcvbuf_policy = net->sctp.rcvbuf_policy;
++	ep->rcvbuf_policy = net_sctp(net).rcvbuf_policy;
+ 
+ 	/* Initialize the secret key used with cookie. */
+ 	get_random_bytes(ep->secret_key, sizeof(ep->secret_key));
+@@ -104,9 +104,9 @@
+ 	/* Add the null key to the endpoint shared keys list and
+ 	 * set the hmcas and chunks pointers.
+ 	 */
+-	ep->prsctp_enable = net->sctp.prsctp_enable;
+-	ep->reconf_enable = net->sctp.reconf_enable;
+-	ep->ecn_enable = net->sctp.ecn_enable;
++	ep->prsctp_enable = net_sctp(net).prsctp_enable;
++	ep->reconf_enable = net_sctp(net).reconf_enable;
++	ep->ecn_enable = net_sctp(net).ecn_enable;
+ 
+ 	/* Remember who we are attached to.  */
+ 	ep->base.sk = sk;
+diff --git a/net/sctp/input.c b/net/sctp/input.c
+--- a/net/sctp/input.c
++++ b/net/sctp/input.c
+@@ -858,7 +858,7 @@
+ 			goto hit;
+ 	}
+ 
+-	ep = sctp_sk(net->sctp.ctl_sock)->ep;
++	ep = sctp_sk(net_sctp(net).ctl_sock)->ep;
+ 
+ hit:
+ 	sk = ep->base.sk;
+@@ -986,7 +986,7 @@
+ 	bool l3mdev_accept = true;
+ 
+ #if IS_ENABLED(CONFIG_NET_L3_MASTER_DEV)
+-	l3mdev_accept = !!READ_ONCE(net->sctp.l3mdev_accept);
++	l3mdev_accept = !!READ_ONCE(net_sctp(net).l3mdev_accept);
+ #endif
+ 	return inet_bound_dev_eq(l3mdev_accept, bound_dev_if, dif, sdif);
+ }
+@@ -1267,7 +1267,7 @@
+ 			break;
+ 
+ 		case SCTP_CID_ASCONF:
+-			if (have_auth || net->sctp.addip_noauth)
++			if (have_auth || net_sctp(net).addip_noauth)
+ 				asoc = __sctp_rcv_asconf_lookup(
+ 						net, ch, laddr,
+ 						sctp_hdr(skb)->source,
+diff --git a/net/sctp/ipv6.c b/net/sctp/ipv6.c
+--- a/net/sctp/ipv6.c
++++ b/net/sctp/ipv6.c
+@@ -89,16 +89,16 @@
+ 			addr->a.v6.sin6_addr = ifa->addr;
+ 			addr->a.v6.sin6_scope_id = ifa->idev->dev->ifindex;
+ 			addr->valid = 1;
+-			spin_lock_bh(&net->sctp.local_addr_lock);
+-			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list);
++			spin_lock_bh(&net_sctp(net).local_addr_lock);
++			list_add_tail_rcu(&addr->list, &net_sctp(net).local_addr_list);
+ 			sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_NEW);
+-			spin_unlock_bh(&net->sctp.local_addr_lock);
++			spin_unlock_bh(&net_sctp(net).local_addr_lock);
+ 		}
+ 		break;
+ 	case NETDEV_DOWN:
+-		spin_lock_bh(&net->sctp.local_addr_lock);
++		spin_lock_bh(&net_sctp(net).local_addr_lock);
+ 		list_for_each_entry_safe(addr, temp,
+-					&net->sctp.local_addr_list, list) {
++					&net_sctp(net).local_addr_list, list) {
+ 			if (addr->a.sa.sa_family == AF_INET6 &&
+ 			    ipv6_addr_equal(&addr->a.v6.sin6_addr,
+ 					    &ifa->addr) &&
+@@ -110,7 +110,7 @@
+ 				break;
+ 			}
+ 		}
+-		spin_unlock_bh(&net->sctp.local_addr_lock);
++		spin_unlock_bh(&net_sctp(net).local_addr_lock);
+ 		if (found)
+ 			kfree_rcu(addr, rcu);
+ 		break;
+diff --git a/net/sctp/objcnt.c b/net/sctp/objcnt.c
+--- a/net/sctp/objcnt.c
++++ b/net/sctp/objcnt.c
+@@ -99,7 +99,7 @@
+ 	struct proc_dir_entry *ent;
+ 
+ 	ent = proc_create_seq("sctp_dbg_objcnt", 0,
+-			  net->sctp.proc_net_sctp, &sctp_objcnt_seq_ops);
++			  net_sctp(net).proc_net_sctp, &sctp_objcnt_seq_ops);
+ 	if (!ent)
+ 		pr_warn("sctp_dbg_objcnt: Unable to create /proc entry.\n");
+ }
+diff --git a/net/sctp/proc.c b/net/sctp/proc.c
+--- a/net/sctp/proc.c
++++ b/net/sctp/proc.c
+@@ -65,7 +65,7 @@
+ 	memset(buff, 0, sizeof(unsigned long) * SCTP_MIB_MAX);
+ 
+ 	snmp_get_cpu_field_batch(buff, sctp_snmp_list,
+-				 net->sctp.sctp_statistics);
++				 net_sctp(net).sctp_statistics);
+ 	for (i = 0; sctp_snmp_list[i].name; i++)
+ 		seq_printf(seq, "%-32s\t%ld\n", sctp_snmp_list[i].name,
+ 						buff[i]);
+@@ -375,25 +375,25 @@
+ /* Set up the proc fs entry for the SCTP protocol. */
+ int __net_init sctp_proc_init(struct net *net)
+ {
+-	net->sctp.proc_net_sctp = proc_net_mkdir(net, "sctp", net->proc_net);
+-	if (!net->sctp.proc_net_sctp)
++	net_sctp(net).proc_net_sctp = proc_net_mkdir(net, "sctp", net->proc_net);
++	if (!net_sctp(net).proc_net_sctp)
+ 		return -ENOMEM;
+-	if (!proc_create_net_single("snmp", 0444, net->sctp.proc_net_sctp,
++	if (!proc_create_net_single("snmp", 0444, net_sctp(net).proc_net_sctp,
+ 			 sctp_snmp_seq_show, NULL))
+ 		goto cleanup;
+-	if (!proc_create_net("eps", 0444, net->sctp.proc_net_sctp,
++	if (!proc_create_net("eps", 0444, net_sctp(net).proc_net_sctp,
+ 			&sctp_eps_ops, sizeof(struct seq_net_private)))
+ 		goto cleanup;
+-	if (!proc_create_net("assocs", 0444, net->sctp.proc_net_sctp,
++	if (!proc_create_net("assocs", 0444, net_sctp(net).proc_net_sctp,
+ 			&sctp_assoc_ops, sizeof(struct sctp_ht_iter)))
+ 		goto cleanup;
+-	if (!proc_create_net("remaddr", 0444, net->sctp.proc_net_sctp,
++	if (!proc_create_net("remaddr", 0444, net_sctp(net).proc_net_sctp,
+ 			&sctp_remaddr_ops, sizeof(struct sctp_ht_iter)))
+ 		goto cleanup;
+ 	return 0;
+ 
+ cleanup:
+ 	remove_proc_subtree("sctp", net->proc_net);
+-	net->sctp.proc_net_sctp = NULL;
++	net_sctp(net).proc_net_sctp = NULL;
+ 	return -ENOMEM;
+ }
+diff --git a/net/sctp/protocol.c b/net/sctp/protocol.c
+--- a/net/sctp/protocol.c
++++ b/net/sctp/protocol.c
+@@ -110,7 +110,7 @@
+ 	for_each_netdev_rcu(net, dev) {
+ 		list_for_each(pos, &sctp_address_families) {
+ 			af = list_entry(pos, struct sctp_af, list);
+-			af->copy_addrlist(&net->sctp.local_addr_list, dev);
++			af->copy_addrlist(&net_sctp(net).local_addr_list, dev);
+ 		}
+ 	}
+ 	rcu_read_unlock();
+@@ -122,7 +122,7 @@
+ 	struct sctp_sockaddr_entry *addr;
+ 	struct list_head *pos, *temp;
+ 
+-	list_for_each_safe(pos, temp, &net->sctp.local_addr_list) {
++	list_for_each_safe(pos, temp, &net_sctp(net).local_addr_list) {
+ 		addr = list_entry(pos, struct sctp_sockaddr_entry, list);
+ 		list_del(pos);
+ 		kfree(addr);
+@@ -138,7 +138,7 @@
+ 	int error = 0;
+ 
+ 	rcu_read_lock();
+-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
++	list_for_each_entry_rcu(addr, &net_sctp(net).local_addr_list, list) {
+ 		if (!addr->valid)
+ 			continue;
+ 		if (!sctp_in_scope(net, &addr->a, scope))
+@@ -630,15 +630,16 @@
+ 
+ static void sctp_addr_wq_timeout_handler(struct timer_list *t)
+ {
+-	struct net *net = from_timer(net, t, sctp.addr_wq_timer);
++	struct net_ext *ext = from_timer(ext, t, sctp.addr_wq_timer);
++	struct net *net = ext->net;
+ 	struct sctp_sockaddr_entry *addrw, *temp;
+ 	struct sctp_sock *sp;
+ 
+-	spin_lock_bh(&net->sctp.addr_wq_lock);
++	spin_lock_bh(&net_sctp(net).addr_wq_lock);
+ 
+-	list_for_each_entry_safe(addrw, temp, &net->sctp.addr_waitq, list) {
++	list_for_each_entry_safe(addrw, temp, &net_sctp(net).addr_waitq, list) {
+ 		pr_debug("%s: the first ent in wq:%p is addr:%pISc for cmd:%d at "
+-			 "entry:%p\n", __func__, &net->sctp.addr_waitq, &addrw->a.sa,
++			 "entry:%p\n", __func__, &net_sctp(net).addr_waitq, &addrw->a.sa,
+ 			 addrw->state, addrw);
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+@@ -662,12 +663,12 @@
+ 
+ 				timeo_val = jiffies;
+ 				timeo_val += msecs_to_jiffies(SCTP_ADDRESS_TICK_DELAY);
+-				mod_timer(&net->sctp.addr_wq_timer, timeo_val);
++				mod_timer(&net_sctp(net).addr_wq_timer, timeo_val);
+ 				break;
+ 			}
+ 		}
+ #endif
+-		list_for_each_entry(sp, &net->sctp.auto_asconf_splist, auto_asconf_list) {
++		list_for_each_entry(sp, &net_sctp(net).auto_asconf_splist, auto_asconf_list) {
+ 			struct sock *sk;
+ 
+ 			sk = sctp_opt2sk(sp);
+@@ -685,7 +686,7 @@
+ 		list_del(&addrw->list);
+ 		kfree(addrw);
+ 	}
+-	spin_unlock_bh(&net->sctp.addr_wq_lock);
++	spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ }
+ 
+ static void sctp_free_addr_wq(struct net *net)
+@@ -693,13 +694,13 @@
+ 	struct sctp_sockaddr_entry *addrw;
+ 	struct sctp_sockaddr_entry *temp;
+ 
+-	spin_lock_bh(&net->sctp.addr_wq_lock);
+-	del_timer(&net->sctp.addr_wq_timer);
+-	list_for_each_entry_safe(addrw, temp, &net->sctp.addr_waitq, list) {
++	spin_lock_bh(&net_sctp(net).addr_wq_lock);
++	del_timer(&net_sctp(net).addr_wq_timer);
++	list_for_each_entry_safe(addrw, temp, &net_sctp(net).addr_waitq, list) {
+ 		list_del(&addrw->list);
+ 		kfree(addrw);
+ 	}
+-	spin_unlock_bh(&net->sctp.addr_wq_lock);
++	spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ }
+ 
+ /* lookup the entry for the same address in the addr_waitq
+@@ -710,7 +711,7 @@
+ {
+ 	struct sctp_sockaddr_entry *addrw;
+ 
+-	list_for_each_entry(addrw, &net->sctp.addr_waitq, list) {
++	list_for_each_entry(addrw, &net_sctp(net).addr_waitq, list) {
+ 		if (addrw->a.sa.sa_family != addr->a.sa.sa_family)
+ 			continue;
+ 		if (addrw->a.sa.sa_family == AF_INET) {
+@@ -737,40 +738,40 @@
+ 	 * new address after a couple of addition and deletion of that address
+ 	 */
+ 
+-	spin_lock_bh(&net->sctp.addr_wq_lock);
++	spin_lock_bh(&net_sctp(net).addr_wq_lock);
+ 	/* Offsets existing events in addr_wq */
+ 	addrw = sctp_addr_wq_lookup(net, addr);
+ 	if (addrw) {
+ 		if (addrw->state != cmd) {
+ 			pr_debug("%s: offsets existing entry for %d, addr:%pISc "
+ 				 "in wq:%p\n", __func__, addrw->state, &addrw->a.sa,
+-				 &net->sctp.addr_waitq);
++				 &net_sctp(net).addr_waitq);
+ 
+ 			list_del(&addrw->list);
+ 			kfree(addrw);
+ 		}
+-		spin_unlock_bh(&net->sctp.addr_wq_lock);
++		spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ 		return;
+ 	}
+ 
+ 	/* OK, we have to add the new address to the wait queue */
+ 	addrw = kmemdup(addr, sizeof(struct sctp_sockaddr_entry), GFP_ATOMIC);
+ 	if (addrw == NULL) {
+-		spin_unlock_bh(&net->sctp.addr_wq_lock);
++		spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ 		return;
+ 	}
+ 	addrw->state = cmd;
+-	list_add_tail(&addrw->list, &net->sctp.addr_waitq);
++	list_add_tail(&addrw->list, &net_sctp(net).addr_waitq);
+ 
+ 	pr_debug("%s: add new entry for cmd:%d, addr:%pISc in wq:%p\n",
+-		 __func__, addrw->state, &addrw->a.sa, &net->sctp.addr_waitq);
++		 __func__, addrw->state, &addrw->a.sa, &net_sctp(net).addr_waitq);
+ 
+-	if (!timer_pending(&net->sctp.addr_wq_timer)) {
++	if (!timer_pending(&net_sctp(net).addr_wq_timer)) {
+ 		timeo_val = jiffies;
+ 		timeo_val += msecs_to_jiffies(SCTP_ADDRESS_TICK_DELAY);
+-		mod_timer(&net->sctp.addr_wq_timer, timeo_val);
++		mod_timer(&net_sctp(net).addr_wq_timer, timeo_val);
+ 	}
+-	spin_unlock_bh(&net->sctp.addr_wq_lock);
++	spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ }
+ 
+ /* Event handler for inet address addition/deletion events.
+@@ -795,16 +796,16 @@
+ 			addr->a.v4.sin_family = AF_INET;
+ 			addr->a.v4.sin_addr.s_addr = ifa->ifa_local;
+ 			addr->valid = 1;
+-			spin_lock_bh(&net->sctp.local_addr_lock);
+-			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list);
++			spin_lock_bh(&net_sctp(net).local_addr_lock);
++			list_add_tail_rcu(&addr->list, &net_sctp(net).local_addr_list);
+ 			sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_NEW);
+-			spin_unlock_bh(&net->sctp.local_addr_lock);
++			spin_unlock_bh(&net_sctp(net).local_addr_lock);
+ 		}
+ 		break;
+ 	case NETDEV_DOWN:
+-		spin_lock_bh(&net->sctp.local_addr_lock);
++		spin_lock_bh(&net_sctp(net).local_addr_lock);
+ 		list_for_each_entry_safe(addr, temp,
+-					&net->sctp.local_addr_list, list) {
++					&net_sctp(net).local_addr_list, list) {
+ 			if (addr->a.sa.sa_family == AF_INET &&
+ 					addr->a.v4.sin_addr.s_addr ==
+ 					ifa->ifa_local) {
+@@ -815,7 +816,7 @@
+ 				break;
+ 			}
+ 		}
+-		spin_unlock_bh(&net->sctp.local_addr_lock);
++		spin_unlock_bh(&net_sctp(net).local_addr_lock);
+ 		if (found)
+ 			kfree_rcu(addr, rcu);
+ 		break;
+@@ -836,12 +837,12 @@
+ 	if (sctp_get_pf_specific(PF_INET6))
+ 		family = PF_INET6;
+ 
+-	err = inet_ctl_sock_create(&net->sctp.ctl_sock, family,
++	err = inet_ctl_sock_create(&net_sctp(net).ctl_sock, family,
+ 				   SOCK_SEQPACKET, IPPROTO_SCTP, net);
+ 
+ 	/* If IPv6 socket could not be created, try the IPv4 socket */
+ 	if (err < 0 && family == PF_INET6)
+-		err = inet_ctl_sock_create(&net->sctp.ctl_sock, AF_INET,
++		err = inet_ctl_sock_create(&net_sctp(net).ctl_sock, AF_INET,
+ 					   SOCK_SEQPACKET, IPPROTO_SCTP,
+ 					   net);
+ 
+@@ -870,7 +871,7 @@
+ 
+ 	udp_conf.family = AF_INET;
+ 	udp_conf.local_ip.s_addr = htonl(INADDR_ANY);
+-	udp_conf.local_udp_port = htons(net->sctp.udp_port);
++	udp_conf.local_udp_port = htons(net_sctp(net).udp_port);
+ 	err = udp_sock_create(net, &udp_conf, &sock);
+ 	if (err) {
+ 		pr_err("Failed to create the SCTP UDP tunneling v4 sock\n");
+@@ -881,21 +882,21 @@
+ 	tuncfg.encap_rcv = sctp_udp_rcv;
+ 	tuncfg.encap_err_lookup = sctp_udp_v4_err;
+ 	setup_udp_tunnel_sock(net, sock, &tuncfg);
+-	net->sctp.udp4_sock = sock->sk;
++	net_sctp(net).udp4_sock = sock->sk;
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+ 	memset(&udp_conf, 0, sizeof(udp_conf));
+ 
+ 	udp_conf.family = AF_INET6;
+ 	udp_conf.local_ip6 = in6addr_any;
+-	udp_conf.local_udp_port = htons(net->sctp.udp_port);
++	udp_conf.local_udp_port = htons(net_sctp(net).udp_port);
+ 	udp_conf.use_udp6_rx_checksums = true;
+ 	udp_conf.ipv6_v6only = true;
+ 	err = udp_sock_create(net, &udp_conf, &sock);
+ 	if (err) {
+ 		pr_err("Failed to create the SCTP UDP tunneling v6 sock\n");
+-		udp_tunnel_sock_release(net->sctp.udp4_sock->sk_socket);
+-		net->sctp.udp4_sock = NULL;
++		udp_tunnel_sock_release(net_sctp(net).udp4_sock->sk_socket);
++		net_sctp(net).udp4_sock = NULL;
+ 		return err;
+ 	}
+ 
+@@ -903,7 +904,7 @@
+ 	tuncfg.encap_rcv = sctp_udp_rcv;
+ 	tuncfg.encap_err_lookup = sctp_udp_v6_err;
+ 	setup_udp_tunnel_sock(net, sock, &tuncfg);
+-	net->sctp.udp6_sock = sock->sk;
++	net_sctp(net).udp6_sock = sock->sk;
+ #endif
+ 
+ 	return 0;
+@@ -911,13 +912,13 @@
+ 
+ void sctp_udp_sock_stop(struct net *net)
+ {
+-	if (net->sctp.udp4_sock) {
+-		udp_tunnel_sock_release(net->sctp.udp4_sock->sk_socket);
+-		net->sctp.udp4_sock = NULL;
+-	}
+-	if (net->sctp.udp6_sock) {
+-		udp_tunnel_sock_release(net->sctp.udp6_sock->sk_socket);
+-		net->sctp.udp6_sock = NULL;
++	if (net_sctp(net).udp4_sock) {
++		udp_tunnel_sock_release(net_sctp(net).udp4_sock->sk_socket);
++		net_sctp(net).udp4_sock = NULL;
++	}
++	if (net_sctp(net).udp6_sock) {
++		udp_tunnel_sock_release(net_sctp(net).udp6_sock->sk_socket);
++		net_sctp(net).udp6_sock = NULL;
+ 	}
+ }
+ 
+@@ -1230,15 +1231,15 @@
+ 
+ static inline int init_sctp_mibs(struct net *net)
+ {
+-	net->sctp.sctp_statistics = alloc_percpu(struct sctp_mib);
+-	if (!net->sctp.sctp_statistics)
++	net_sctp(net).sctp_statistics = alloc_percpu(struct sctp_mib);
++	if (!net_sctp(net).sctp_statistics)
+ 		return -ENOMEM;
+ 	return 0;
+ }
+ 
+ static inline void cleanup_sctp_mibs(struct net *net)
+ {
+-	free_percpu(net->sctp.sctp_statistics);
++	free_percpu(net_sctp(net).sctp_statistics);
+ }
+ 
+ static void sctp_v4_pf_init(void)
+@@ -1302,97 +1303,97 @@
+ 	 */
+ 	/* The following protocol parameters are RECOMMENDED:  */
+ 	/* RTO.Initial              - 3  seconds */
+-	net->sctp.rto_initial			= SCTP_RTO_INITIAL;
++	net_sctp(net).rto_initial			= SCTP_RTO_INITIAL;
+ 	/* RTO.Min                  - 1  second */
+-	net->sctp.rto_min	 		= SCTP_RTO_MIN;
++	net_sctp(net).rto_min	 		= SCTP_RTO_MIN;
+ 	/* RTO.Max                 -  60 seconds */
+-	net->sctp.rto_max 			= SCTP_RTO_MAX;
++	net_sctp(net).rto_max 			= SCTP_RTO_MAX;
+ 	/* RTO.Alpha                - 1/8 */
+-	net->sctp.rto_alpha			= SCTP_RTO_ALPHA;
++	net_sctp(net).rto_alpha			= SCTP_RTO_ALPHA;
+ 	/* RTO.Beta                 - 1/4 */
+-	net->sctp.rto_beta			= SCTP_RTO_BETA;
++	net_sctp(net).rto_beta			= SCTP_RTO_BETA;
+ 
+ 	/* Valid.Cookie.Life        - 60  seconds */
+-	net->sctp.valid_cookie_life		= SCTP_DEFAULT_COOKIE_LIFE;
++	net_sctp(net).valid_cookie_life		= SCTP_DEFAULT_COOKIE_LIFE;
+ 
+ 	/* Whether Cookie Preservative is enabled(1) or not(0) */
+-	net->sctp.cookie_preserve_enable 	= 1;
++	net_sctp(net).cookie_preserve_enable 	= 1;
+ 
+ 	/* Default sctp sockets to use md5 as their hmac alg */
+ #if defined (CONFIG_SCTP_DEFAULT_COOKIE_HMAC_MD5)
+-	net->sctp.sctp_hmac_alg			= "md5";
++	net_sctp(net).sctp_hmac_alg			= "md5";
+ #elif defined (CONFIG_SCTP_DEFAULT_COOKIE_HMAC_SHA1)
+-	net->sctp.sctp_hmac_alg			= "sha1";
++	net_sctp(net).sctp_hmac_alg			= "sha1";
+ #else
+-	net->sctp.sctp_hmac_alg			= NULL;
++	net_sctp(net).sctp_hmac_alg			= NULL;
+ #endif
+ 
+ 	/* Max.Burst		    - 4 */
+-	net->sctp.max_burst			= SCTP_DEFAULT_MAX_BURST;
++	net_sctp(net).max_burst			= SCTP_DEFAULT_MAX_BURST;
+ 
+ 	/* Disable of Primary Path Switchover by default */
+-	net->sctp.ps_retrans = SCTP_PS_RETRANS_MAX;
++	net_sctp(net).ps_retrans = SCTP_PS_RETRANS_MAX;
+ 
+ 	/* Enable pf state by default */
+-	net->sctp.pf_enable = 1;
++	net_sctp(net).pf_enable = 1;
+ 
+ 	/* Ignore pf exposure feature by default */
+-	net->sctp.pf_expose = SCTP_PF_EXPOSE_UNSET;
++	net_sctp(net).pf_expose = SCTP_PF_EXPOSE_UNSET;
+ 
+ 	/* Association.Max.Retrans  - 10 attempts
+ 	 * Path.Max.Retrans         - 5  attempts (per destination address)
+ 	 * Max.Init.Retransmits     - 8  attempts
+ 	 */
+-	net->sctp.max_retrans_association	= 10;
+-	net->sctp.max_retrans_path		= 5;
+-	net->sctp.max_retrans_init		= 8;
++	net_sctp(net).max_retrans_association	= 10;
++	net_sctp(net).max_retrans_path		= 5;
++	net_sctp(net).max_retrans_init		= 8;
+ 
+ 	/* Sendbuffer growth	    - do per-socket accounting */
+-	net->sctp.sndbuf_policy			= 0;
++	net_sctp(net).sndbuf_policy			= 0;
+ 
+ 	/* Rcvbuffer growth	    - do per-socket accounting */
+-	net->sctp.rcvbuf_policy			= 0;
++	net_sctp(net).rcvbuf_policy			= 0;
+ 
+ 	/* HB.interval              - 30 seconds */
+-	net->sctp.hb_interval			= SCTP_DEFAULT_TIMEOUT_HEARTBEAT;
++	net_sctp(net).hb_interval			= SCTP_DEFAULT_TIMEOUT_HEARTBEAT;
+ 
+ 	/* delayed SACK timeout */
+-	net->sctp.sack_timeout			= SCTP_DEFAULT_TIMEOUT_SACK;
++	net_sctp(net).sack_timeout			= SCTP_DEFAULT_TIMEOUT_SACK;
+ 
+ 	/* Disable ADDIP by default. */
+-	net->sctp.addip_enable = 0;
+-	net->sctp.addip_noauth = 0;
+-	net->sctp.default_auto_asconf = 0;
++	net_sctp(net).addip_enable = 0;
++	net_sctp(net).addip_noauth = 0;
++	net_sctp(net).default_auto_asconf = 0;
+ 
+ 	/* Enable PR-SCTP by default. */
+-	net->sctp.prsctp_enable = 1;
++	net_sctp(net).prsctp_enable = 1;
+ 
+ 	/* Disable RECONF by default. */
+-	net->sctp.reconf_enable = 0;
++	net_sctp(net).reconf_enable = 0;
+ 
+ 	/* Disable AUTH by default. */
+-	net->sctp.auth_enable = 0;
++	net_sctp(net).auth_enable = 0;
+ 
+ 	/* Enable ECN by default. */
+-	net->sctp.ecn_enable = 1;
++	net_sctp(net).ecn_enable = 1;
+ 
+ 	/* Set UDP tunneling listening port to 0 by default */
+-	net->sctp.udp_port = 0;
++	net_sctp(net).udp_port = 0;
+ 
+ 	/* Set remote encap port to 0 by default */
+-	net->sctp.encap_port = 0;
++	net_sctp(net).encap_port = 0;
+ 
+ 	/* Set SCOPE policy to enabled */
+-	net->sctp.scope_policy = SCTP_SCOPE_POLICY_ENABLE;
++	net_sctp(net).scope_policy = SCTP_SCOPE_POLICY_ENABLE;
+ 
+ 	/* Set the default rwnd update threshold */
+-	net->sctp.rwnd_upd_shift = SCTP_DEFAULT_RWND_SHIFT;
++	net_sctp(net).rwnd_upd_shift = SCTP_DEFAULT_RWND_SHIFT;
+ 
+ 	/* Initialize maximum autoclose timeout. */
+-	net->sctp.max_autoclose		= INT_MAX / HZ;
++	net_sctp(net).max_autoclose		= INT_MAX / HZ;
+ 
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+-	net->sctp.l3mdev_accept = 1;
++	net_sctp(net).l3mdev_accept = 1;
+ #endif
+ 
+ 	status = sctp_sysctl_net_register(net);
+@@ -1414,16 +1415,16 @@
+ 	sctp_dbg_objcnt_init(net);
+ 
+ 	/* Initialize the local address list. */
+-	INIT_LIST_HEAD(&net->sctp.local_addr_list);
+-	spin_lock_init(&net->sctp.local_addr_lock);
++	INIT_LIST_HEAD(&net_sctp(net).local_addr_list);
++	spin_lock_init(&net_sctp(net).local_addr_lock);
+ 	sctp_get_local_addr_list(net);
+ 
+ 	/* Initialize the address event list */
+-	INIT_LIST_HEAD(&net->sctp.addr_waitq);
+-	INIT_LIST_HEAD(&net->sctp.auto_asconf_splist);
+-	spin_lock_init(&net->sctp.addr_wq_lock);
+-	net->sctp.addr_wq_timer.expires = 0;
+-	timer_setup(&net->sctp.addr_wq_timer, sctp_addr_wq_timeout_handler, 0);
++	INIT_LIST_HEAD(&net_sctp(net).addr_waitq);
++	INIT_LIST_HEAD(&net_sctp(net).auto_asconf_splist);
++	spin_lock_init(&net_sctp(net).addr_wq_lock);
++	net_sctp(net).addr_wq_timer.expires = 0;
++	timer_setup(&net_sctp(net).addr_wq_timer, sctp_addr_wq_timeout_handler, 0);
+ 
+ 	return 0;
+ 
+@@ -1445,7 +1446,7 @@
+ 
+ #ifdef CONFIG_PROC_FS
+ 	remove_proc_subtree("sctp", net->proc_net);
+-	net->sctp.proc_net_sctp = NULL;
++	net_sctp(net).proc_net_sctp = NULL;
+ #endif
+ 	cleanup_sctp_mibs(net);
+ 	sctp_sysctl_net_unregister(net);
+@@ -1471,7 +1472,7 @@
+ static void __net_exit sctp_ctrlsock_exit(struct net *net)
+ {
+ 	/* Free the control endpoint.  */
+-	inet_ctl_sock_destroy(net->sctp.ctl_sock);
++	inet_ctl_sock_destroy(net_sctp(net).ctl_sock);
+ }
+ 
+ static struct pernet_operations sctp_ctrlsock_ops = {
+diff --git a/net/sctp/sm_make_chunk.c b/net/sctp/sm_make_chunk.c
+--- a/net/sctp/sm_make_chunk.c
++++ b/net/sctp/sm_make_chunk.c
+@@ -2034,7 +2034,7 @@
+ 	 * only if ADD-IP is turned on and we are not backward-compatible
+ 	 * mode.
+ 	 */
+-	if (net->sctp.addip_noauth)
++	if (net_sctp(net).addip_noauth)
+ 		return 1;
+ 
+ 	if (ep->asconf_enable && !have_auth && have_asconf)
+@@ -2414,7 +2414,7 @@
+ 	 * also give us an option to silently ignore the packet, which
+ 	 * is what we'll do here.
+ 	 */
+-	if (!asoc->base.net->sctp.addip_noauth &&
++	if (!net_sctp(asoc->base.net).addip_noauth &&
+ 	    (asoc->peer.asconf_capable && !asoc->peer.auth_capable)) {
+ 		asoc->peer.addip_disabled_mask |= (SCTP_PARAM_ADD_IP |
+ 						  SCTP_PARAM_DEL_IP |
+@@ -2578,7 +2578,7 @@
+ 		break;
+ 
+ 	case SCTP_PARAM_COOKIE_PRESERVATIVE:
+-		if (!net->sctp.cookie_preserve_enable)
++		if (!net_sctp(net).cookie_preserve_enable)
+ 			break;
+ 
+ 		stale = ntohl(param.life->lifespan_increment);
+diff --git a/net/sctp/sm_sideeffect.c b/net/sctp/sm_sideeffect.c
+--- a/net/sctp/sm_sideeffect.c
++++ b/net/sctp/sm_sideeffect.c
+@@ -578,7 +578,7 @@
+ 	 * is SCTP_ACTIVE, then mark this transport as Partially Failed,
+ 	 * see SCTP Quick Failover Draft, section 5.1
+ 	 */
+-	if (asoc->base.net->sctp.pf_enable &&
++	if (net_sctp(asoc->base.net).pf_enable &&
+ 	    transport->state == SCTP_ACTIVE &&
+ 	    transport->error_count < transport->pathmaxrxt &&
+ 	    transport->error_count > transport->pf_retrans) {
+diff --git a/net/sctp/sm_statefuns.c b/net/sctp/sm_statefuns.c
+--- a/net/sctp/sm_statefuns.c
++++ b/net/sctp/sm_statefuns.c
+@@ -350,7 +350,7 @@
+ 	/* If the packet is an OOTB packet which is temporarily on the
+ 	 * control endpoint, respond with an ABORT.
+ 	 */
+-	if (ep == sctp_sk(net->sctp.ctl_sock)->ep) {
++	if (ep == sctp_sk(net_sctp(net).ctl_sock)->ep) {
+ 		SCTP_INC_STATS(net, SCTP_MIB_OUTOFBLUES);
+ 		return sctp_sf_tabort_8_4_8(net, ep, asoc, type, arg, commands);
+ 	}
+@@ -649,7 +649,7 @@
+ 	 */
+ 
+ 	/* Make sure that we and the peer are AUTH capable */
+-	if (!net->sctp.auth_enable || !asoc->peer.auth_capable)
++	if (!net_sctp(net).auth_enable || !asoc->peer.auth_capable)
+ 		return false;
+ 
+ 	/* set-up our fake chunk so that we can process it */
+@@ -718,7 +718,7 @@
+ 	/* If the packet is an OOTB packet which is temporarily on the
+ 	 * control endpoint, respond with an ABORT.
+ 	 */
+-	if (ep == sctp_sk(net->sctp.ctl_sock)->ep) {
++	if (ep == sctp_sk(net_sctp(net).ctl_sock)->ep) {
+ 		SCTP_INC_STATS(net, SCTP_MIB_OUTOFBLUES);
+ 		return sctp_sf_tabort_8_4_8(net, ep, asoc, type, arg, commands);
+ 	}
+@@ -1347,7 +1347,7 @@
+ 	errhdr->length = htons(len);
+ 
+ 	/* Assign to the control socket. */
+-	ep = sctp_sk(net->sctp.ctl_sock)->ep;
++	ep = sctp_sk(net_sctp(net).ctl_sock)->ep;
+ 
+ 	/* Association is NULL since this may be a restart attack and we
+ 	 * want to send back the attacker's vtag.
+@@ -1817,7 +1817,7 @@
+ 	/* Per the above section, we'll discard the chunk if we have an
+ 	 * endpoint.  If this is an OOTB INIT-ACK, treat it as such.
+ 	 */
+-	if (ep == sctp_sk(net->sctp.ctl_sock)->ep)
++	if (ep == sctp_sk(net_sctp(net).ctl_sock)->ep)
+ 		return sctp_sf_ootb(net, ep, asoc, type, arg, commands);
+ 	else
+ 		return sctp_sf_discard_chunk(net, ep, asoc, type, arg, commands);
+@@ -3898,7 +3898,7 @@
+ 	 * described in [I-D.ietf-tsvwg-sctp-auth].
+ 	 */
+ 	if (!asoc->peer.asconf_capable ||
+-	    (!net->sctp.addip_noauth && !chunk->auth))
++	    (!net_sctp(net).addip_noauth && !chunk->auth))
+ 		return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
+ 
+ 	hdr = (struct sctp_addiphdr *)chunk->skb->data;
+@@ -4041,7 +4041,7 @@
+ 	 * described in [I-D.ietf-tsvwg-sctp-auth].
+ 	 */
+ 	if (!asoc->peer.asconf_capable ||
+-	    (!net->sctp.addip_noauth && !asconf_ack->auth))
++	    (!net_sctp(net).addip_noauth && !asconf_ack->auth))
+ 		return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
+ 
+ 	addip_hdr = (struct sctp_addiphdr *)asconf_ack->skb->data;
+@@ -6433,7 +6433,7 @@
+ 	 * the source address.
+ 	 */
+ 	sctp_transport_route(transport, (union sctp_addr *)&chunk->dest,
+-			     sctp_sk(net->sctp.ctl_sock));
++			     sctp_sk(net_sctp(net).ctl_sock));
+ 
+ 	packet = &transport->packet;
+ 	sctp_packet_init(packet, transport, sport, dport);
+diff --git a/net/sctp/socket.c b/net/sctp/socket.c
+--- a/net/sctp/socket.c
++++ b/net/sctp/socket.c
+@@ -364,10 +364,10 @@
+ {
+ 	struct net *net = sock_net(&sp->inet.sk);
+ 
+-	if (net->sctp.default_auto_asconf) {
+-		spin_lock_bh(&net->sctp.addr_wq_lock);
+-		list_add_tail(&sp->auto_asconf_list, &net->sctp.auto_asconf_splist);
+-		spin_unlock_bh(&net->sctp.addr_wq_lock);
++	if (net_sctp(net).default_auto_asconf) {
++		spin_lock_bh(&net_sctp(net).addr_wq_lock);
++		list_add_tail(&sp->auto_asconf_list, &net_sctp(net).auto_asconf_splist);
++		spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ 		sp->do_auto_asconf = 1;
+ 	}
+ }
+@@ -1540,7 +1540,7 @@
+ 	 * Also, sctp_destroy_sock() needs to be called with addr_wq_lock
+ 	 * held and that should be grabbed before socket lock.
+ 	 */
+-	spin_lock_bh(&net->sctp.addr_wq_lock);
++	spin_lock_bh(&net_sctp(net).addr_wq_lock);
+ 	bh_lock_sock_nested(sk);
+ 
+ 	/* Hold the sock, since sk_common_release() will put sock_put()
+@@ -1550,7 +1550,7 @@
+ 	sk_common_release(sk);
+ 
+ 	bh_unlock_sock(sk);
+-	spin_unlock_bh(&net->sctp.addr_wq_lock);
++	spin_unlock_bh(&net_sctp(net).addr_wq_lock);
+ 
+ 	sock_put(sk);
+ 
+@@ -2279,8 +2279,8 @@
+ 		return -EINVAL;
+ 
+ 	sp->autoclose = *optval;
+-	if (sp->autoclose > net->sctp.max_autoclose)
+-		sp->autoclose = net->sctp.max_autoclose;
++	if (sp->autoclose > net_sctp(net).max_autoclose)
++		sp->autoclose = net_sctp(net).max_autoclose;
+ 
+ 	return 0;
+ }
+@@ -3853,16 +3853,16 @@
+ 	if ((*val && sp->do_auto_asconf) || (!*val && !sp->do_auto_asconf))
+ 		return 0;
+ 
+-	spin_lock_bh(&sock_net(sk)->sctp.addr_wq_lock);
++	spin_lock_bh(&net_sctp(sock_net(sk)).addr_wq_lock);
+ 	if (*val == 0 && sp->do_auto_asconf) {
+ 		list_del(&sp->auto_asconf_list);
+ 		sp->do_auto_asconf = 0;
+ 	} else if (*val && !sp->do_auto_asconf) {
+ 		list_add_tail(&sp->auto_asconf_list,
+-		    &sock_net(sk)->sctp.auto_asconf_splist);
++		    &net_sctp(sock_net(sk)).auto_asconf_splist);
+ 		sp->do_auto_asconf = 1;
+ 	}
+-	spin_unlock_bh(&sock_net(sk)->sctp.addr_wq_lock);
++	spin_unlock_bh(&net_sctp(sock_net(sk)).addr_wq_lock);
+ 	return 0;
+ }
+ 
+@@ -4240,7 +4240,7 @@
+ 	if (!asoc && p->assoc_id != SCTP_FUTURE_ASSOC && sctp_style(sk, UDP))
+ 		return -EINVAL;
+ 
+-	if (!sock_net(sk)->sctp.intl_enable || !sp->frag_interleave) {
++	if (!net_sctp(sock_net(sk)).intl_enable || !sp->frag_interleave) {
+ 		return -EPERM;
+ 	}
+ 
+@@ -4984,9 +4984,9 @@
+ 	sp->default_timetolive = 0;
+ 
+ 	sp->default_rcv_context = 0;
+-	sp->max_burst = net->sctp.max_burst;
++	sp->max_burst = net_sctp(net).max_burst;
+ 
+-	sp->sctp_hmac_alg = net->sctp.sctp_hmac_alg;
++	sp->sctp_hmac_alg = net_sctp(net).sctp_hmac_alg;
+ 
+ 	/* Initialize default setup parameters. These parameters
+ 	 * can be modified with the SCTP_INITMSG socket option or
+@@ -4994,24 +4994,24 @@
+ 	 */
+ 	sp->initmsg.sinit_num_ostreams   = sctp_max_outstreams;
+ 	sp->initmsg.sinit_max_instreams  = sctp_max_instreams;
+-	sp->initmsg.sinit_max_attempts   = net->sctp.max_retrans_init;
+-	sp->initmsg.sinit_max_init_timeo = net->sctp.rto_max;
++	sp->initmsg.sinit_max_attempts   = net_sctp(net).max_retrans_init;
++	sp->initmsg.sinit_max_init_timeo = net_sctp(net).rto_max;
+ 
+ 	/* Initialize default RTO related parameters.  These parameters can
+ 	 * be modified for with the SCTP_RTOINFO socket option.
+ 	 */
+-	sp->rtoinfo.srto_initial = net->sctp.rto_initial;
+-	sp->rtoinfo.srto_max     = net->sctp.rto_max;
+-	sp->rtoinfo.srto_min     = net->sctp.rto_min;
++	sp->rtoinfo.srto_initial = net_sctp(net).rto_initial;
++	sp->rtoinfo.srto_max     = net_sctp(net).rto_max;
++	sp->rtoinfo.srto_min     = net_sctp(net).rto_min;
+ 
+ 	/* Initialize default association related parameters. These parameters
+ 	 * can be modified with the SCTP_ASSOCINFO socket option.
+ 	 */
+-	sp->assocparams.sasoc_asocmaxrxt = net->sctp.max_retrans_association;
++	sp->assocparams.sasoc_asocmaxrxt = net_sctp(net).max_retrans_association;
+ 	sp->assocparams.sasoc_number_peer_destinations = 0;
+ 	sp->assocparams.sasoc_peer_rwnd = 0;
+ 	sp->assocparams.sasoc_local_rwnd = 0;
+-	sp->assocparams.sasoc_cookie_life = net->sctp.valid_cookie_life;
++	sp->assocparams.sasoc_cookie_life = net_sctp(net).valid_cookie_life;
+ 
+ 	/* Initialize default event subscriptions. By default, all the
+ 	 * options are off.
+@@ -5021,15 +5021,15 @@
+ 	/* Default Peer Address Parameters.  These defaults can
+ 	 * be modified via SCTP_PEER_ADDR_PARAMS
+ 	 */
+-	sp->hbinterval  = net->sctp.hb_interval;
+-	sp->udp_port    = htons(net->sctp.udp_port);
+-	sp->encap_port  = htons(net->sctp.encap_port);
+-	sp->pathmaxrxt  = net->sctp.max_retrans_path;
+-	sp->pf_retrans  = net->sctp.pf_retrans;
+-	sp->ps_retrans  = net->sctp.ps_retrans;
+-	sp->pf_expose   = net->sctp.pf_expose;
++	sp->hbinterval  = net_sctp(net).hb_interval;
++	sp->udp_port    = htons(net_sctp(net).udp_port);
++	sp->encap_port  = htons(net_sctp(net).encap_port);
++	sp->pathmaxrxt  = net_sctp(net).max_retrans_path;
++	sp->pf_retrans  = net_sctp(net).pf_retrans;
++	sp->ps_retrans  = net_sctp(net).ps_retrans;
++	sp->pf_expose   = net_sctp(net).pf_expose;
+ 	sp->pathmtu     = 0; /* allow default discovery */
+-	sp->sackdelay   = net->sctp.sack_timeout;
++	sp->sackdelay   = net_sctp(net).sack_timeout;
+ 	sp->sackfreq	= 2;
+ 	sp->param_flags = SPP_HB_ENABLE |
+ 			  SPP_PMTUD_ENABLE |
+@@ -5068,7 +5068,7 @@
+ 	atomic_set(&sp->pd_mode, 0);
+ 	skb_queue_head_init(&sp->pd_lobby);
+ 	sp->frag_interleave = 0;
+-	sp->probe_interval = net->sctp.probe_interval;
++	sp->probe_interval = net_sctp(net).probe_interval;
+ 
+ 	/* Create a per socket endpoint structure.  Even if we
+ 	 * change the data structure relationships, this may still
+@@ -5091,7 +5091,7 @@
+ }
+ 
+ /* Cleanup any SCTP per socket resources. Must be called with
+- * sock_net(sk)->sctp.addr_wq_lock held if sp->do_auto_asconf is true
++ * net_sctp(sock_net(sk)).addr_wq_lock held if sp->do_auto_asconf is true
+  */
+ static void sctp_destroy_sock(struct sock *sk)
+ {
+@@ -6203,7 +6203,7 @@
+ 	struct net *net = sock_net(sk);
+ 
+ 	rcu_read_lock();
+-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
++	list_for_each_entry_rcu(addr, &net_sctp(net).local_addr_list, list) {
+ 		if (!addr->valid)
+ 			continue;
+ 
+@@ -9575,7 +9575,7 @@
+ 		return err;
+ 
+ 	/* New ep's auth_hmacs should be set if old ep's is set, in case
+-	 * that net->sctp.auth_enable has been changed to 0 by users and
++	 * that net_sctp(net).auth_enable has been changed to 0 by users and
+ 	 * new ep's auth_hmacs couldn't be set in sctp_endpoint_init().
+ 	 */
+ 	if (oldsp->ep->auth_hmacs) {
+diff --git a/net/sctp/sysctl.c b/net/sctp/sysctl.c
+--- a/net/sctp/sysctl.c
++++ b/net/sctp/sysctl.c
+@@ -25,6 +25,9 @@
+ #include <net/sctp/sctp.h>
+ #include <linux/sysctl.h>
+ 
++#define sctp_net_from_ctl(ctl, field) \
++	(container_of((ctl)->data, struct net_ext, sctp.field)->net)
++
+ static int timer_max = 86400000; /* ms in one day */
+ static int sack_timer_min = 1;
+ static int sack_timer_max = 500;
+@@ -37,6 +40,7 @@
+ static int pf_expose_max = SCTP_PF_EXPOSE_MAX;
+ static int ps_retrans_max = SCTP_PS_RETRANS_MAX;
+ static int udp_port_max = 65535;
++static struct netns_sctp sctp_sysctl_defaults;
+ 
+ static unsigned long max_autoclose_min = 0;
+ static unsigned long max_autoclose_max =
+@@ -95,43 +99,43 @@
+ static struct ctl_table sctp_net_table[] = {
+ 	[SCTP_RTO_MIN_IDX] = {
+ 		.procname	= "rto_min",
+-		.data		= &init_net.sctp.rto_min,
++		.data		= &sctp_sysctl_defaults.rto_min,
+ 		.maxlen		= sizeof(unsigned int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_rto_min,
+ 		.extra1         = SYSCTL_ONE,
+-		.extra2         = &init_net.sctp.rto_max
++		.extra2         = &sctp_sysctl_defaults.rto_max
+ 	},
+ 	[SCTP_RTO_MAX_IDX] =  {
+ 		.procname	= "rto_max",
+-		.data		= &init_net.sctp.rto_max,
++		.data		= &sctp_sysctl_defaults.rto_max,
+ 		.maxlen		= sizeof(unsigned int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_rto_max,
+-		.extra1         = &init_net.sctp.rto_min,
++		.extra1         = &sctp_sysctl_defaults.rto_min,
+ 		.extra2         = &timer_max
+ 	},
+ 	[SCTP_PF_RETRANS_IDX] = {
+ 		.procname	= "pf_retrans",
+-		.data		= &init_net.sctp.pf_retrans,
++		.data		= &sctp_sysctl_defaults.pf_retrans,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+ 		.extra1		= SYSCTL_ZERO,
+-		.extra2		= &init_net.sctp.ps_retrans,
++		.extra2		= &sctp_sysctl_defaults.ps_retrans,
+ 	},
+ 	[SCTP_PS_RETRANS_IDX] = {
+ 		.procname	= "ps_retrans",
+-		.data		= &init_net.sctp.ps_retrans,
++		.data		= &sctp_sysctl_defaults.ps_retrans,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+-		.extra1		= &init_net.sctp.pf_retrans,
++		.extra1		= &sctp_sysctl_defaults.pf_retrans,
+ 		.extra2		= &ps_retrans_max,
+ 	},
+ 	{
+ 		.procname	= "rto_initial",
+-		.data		= &init_net.sctp.rto_initial,
++		.data		= &sctp_sysctl_defaults.rto_initial,
+ 		.maxlen		= sizeof(unsigned int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -140,7 +144,7 @@
+ 	},
+ 	{
+ 		.procname	= "rto_alpha_exp_divisor",
+-		.data		= &init_net.sctp.rto_alpha,
++		.data		= &sctp_sysctl_defaults.rto_alpha,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_alpha_beta,
+@@ -149,7 +153,7 @@
+ 	},
+ 	{
+ 		.procname	= "rto_beta_exp_divisor",
+-		.data		= &init_net.sctp.rto_beta,
++		.data		= &sctp_sysctl_defaults.rto_beta,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_alpha_beta,
+@@ -158,7 +162,7 @@
+ 	},
+ 	{
+ 		.procname	= "max_burst",
+-		.data		= &init_net.sctp.max_burst,
++		.data		= &sctp_sysctl_defaults.max_burst,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -167,21 +171,21 @@
+ 	},
+ 	{
+ 		.procname	= "cookie_preserve_enable",
+-		.data		= &init_net.sctp.cookie_preserve_enable,
++		.data		= &sctp_sysctl_defaults.cookie_preserve_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "cookie_hmac_alg",
+-		.data		= &init_net.sctp.sctp_hmac_alg,
++		.data		= &sctp_sysctl_defaults.sctp_hmac_alg,
+ 		.maxlen		= 8,
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_hmac_alg,
+ 	},
+ 	{
+ 		.procname	= "valid_cookie_life",
+-		.data		= &init_net.sctp.valid_cookie_life,
++		.data		= &sctp_sysctl_defaults.valid_cookie_life,
+ 		.maxlen		= sizeof(unsigned int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -190,7 +194,7 @@
+ 	},
+ 	{
+ 		.procname	= "sack_timeout",
+-		.data		= &init_net.sctp.sack_timeout,
++		.data		= &sctp_sysctl_defaults.sack_timeout,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -199,7 +203,7 @@
+ 	},
+ 	{
+ 		.procname	= "hb_interval",
+-		.data		= &init_net.sctp.hb_interval,
++		.data		= &sctp_sysctl_defaults.hb_interval,
+ 		.maxlen		= sizeof(unsigned int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -208,7 +212,7 @@
+ 	},
+ 	{
+ 		.procname	= "association_max_retrans",
+-		.data		= &init_net.sctp.max_retrans_association,
++		.data		= &sctp_sysctl_defaults.max_retrans_association,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -217,7 +221,7 @@
+ 	},
+ 	{
+ 		.procname	= "path_max_retrans",
+-		.data		= &init_net.sctp.max_retrans_path,
++		.data		= &sctp_sysctl_defaults.max_retrans_path,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -226,7 +230,7 @@
+ 	},
+ 	{
+ 		.procname	= "max_init_retransmits",
+-		.data		= &init_net.sctp.max_retrans_init,
++		.data		= &sctp_sysctl_defaults.max_retrans_init,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -235,84 +239,84 @@
+ 	},
+ 	{
+ 		.procname	= "sndbuf_policy",
+-		.data		= &init_net.sctp.sndbuf_policy,
++		.data		= &sctp_sysctl_defaults.sndbuf_policy,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "rcvbuf_policy",
+-		.data		= &init_net.sctp.rcvbuf_policy,
++		.data		= &sctp_sysctl_defaults.rcvbuf_policy,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "default_auto_asconf",
+-		.data		= &init_net.sctp.default_auto_asconf,
++		.data		= &sctp_sysctl_defaults.default_auto_asconf,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "addip_enable",
+-		.data		= &init_net.sctp.addip_enable,
++		.data		= &sctp_sysctl_defaults.addip_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "addip_noauth_enable",
+-		.data		= &init_net.sctp.addip_noauth,
++		.data		= &sctp_sysctl_defaults.addip_noauth,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "prsctp_enable",
+-		.data		= &init_net.sctp.prsctp_enable,
++		.data		= &sctp_sysctl_defaults.prsctp_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "reconf_enable",
+-		.data		= &init_net.sctp.reconf_enable,
++		.data		= &sctp_sysctl_defaults.reconf_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "auth_enable",
+-		.data		= &init_net.sctp.auth_enable,
++		.data		= &sctp_sysctl_defaults.auth_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_auth,
+ 	},
+ 	{
+ 		.procname	= "intl_enable",
+-		.data		= &init_net.sctp.intl_enable,
++		.data		= &sctp_sysctl_defaults.intl_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "ecn_enable",
+-		.data		= &init_net.sctp.ecn_enable,
++		.data		= &sctp_sysctl_defaults.ecn_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "plpmtud_probe_interval",
+-		.data		= &init_net.sctp.probe_interval,
++		.data		= &sctp_sysctl_defaults.probe_interval,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_probe_interval,
+ 	},
+ 	{
+ 		.procname	= "udp_port",
+-		.data		= &init_net.sctp.udp_port,
++		.data		= &sctp_sysctl_defaults.udp_port,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_sctp_do_udp_port,
+@@ -321,7 +325,7 @@
+ 	},
+ 	{
+ 		.procname	= "encap_port",
+-		.data		= &init_net.sctp.encap_port,
++		.data		= &sctp_sysctl_defaults.encap_port,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -330,7 +334,7 @@
+ 	},
+ 	{
+ 		.procname	= "addr_scope_policy",
+-		.data		= &init_net.sctp.scope_policy,
++		.data		= &sctp_sysctl_defaults.scope_policy,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -339,7 +343,7 @@
+ 	},
+ 	{
+ 		.procname	= "rwnd_update_shift",
+-		.data		= &init_net.sctp.rwnd_upd_shift,
++		.data		= &sctp_sysctl_defaults.rwnd_upd_shift,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= &proc_dointvec_minmax,
+@@ -348,7 +352,7 @@
+ 	},
+ 	{
+ 		.procname	= "max_autoclose",
+-		.data		= &init_net.sctp.max_autoclose,
++		.data		= &sctp_sysctl_defaults.max_autoclose,
+ 		.maxlen		= sizeof(unsigned long),
+ 		.mode		= 0644,
+ 		.proc_handler	= &proc_doulongvec_minmax,
+@@ -358,7 +362,7 @@
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+ 	{
+ 		.procname	= "l3mdev_accept",
+-		.data		= &init_net.sctp.l3mdev_accept,
++		.data		= &sctp_sysctl_defaults.l3mdev_accept,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -368,14 +372,14 @@
+ #endif
+ 	{
+ 		.procname	= "pf_enable",
+-		.data		= &init_net.sctp.pf_enable,
++		.data		= &sctp_sysctl_defaults.pf_enable,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+ 		.procname	= "pf_expose",
+-		.data		= &init_net.sctp.pf_expose,
++		.data		= &sctp_sysctl_defaults.pf_expose,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -387,8 +391,7 @@
+ static int proc_sctp_do_hmac_alg(const struct ctl_table *ctl, int write,
+ 				 void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net,
+-				       sctp.sctp_hmac_alg);
++	struct net *net = sctp_net_from_ctl(ctl, sctp_hmac_alg);
+ 	struct ctl_table tbl;
+ 	bool changed = false;
+ 	char *none = "none";
+@@ -401,7 +404,7 @@
+ 		tbl.data = tmp;
+ 		tbl.maxlen = sizeof(tmp);
+ 	} else {
+-		tbl.data = net->sctp.sctp_hmac_alg ? : none;
++		tbl.data = net_sctp(net).sctp_hmac_alg ? : none;
+ 		tbl.maxlen = strlen(tbl.data);
+ 	}
+ 
+@@ -409,18 +412,18 @@
+ 	if (write && ret == 0) {
+ #ifdef CONFIG_CRYPTO_MD5
+ 		if (!strncmp(tmp, "md5", 3)) {
+-			net->sctp.sctp_hmac_alg = "md5";
++			net_sctp(net).sctp_hmac_alg = "md5";
+ 			changed = true;
+ 		}
+ #endif
+ #ifdef CONFIG_CRYPTO_SHA1
+ 		if (!strncmp(tmp, "sha1", 4)) {
+-			net->sctp.sctp_hmac_alg = "sha1";
++			net_sctp(net).sctp_hmac_alg = "sha1";
+ 			changed = true;
+ 		}
+ #endif
+ 		if (!strncmp(tmp, "none", 4)) {
+-			net->sctp.sctp_hmac_alg = NULL;
++			net_sctp(net).sctp_hmac_alg = NULL;
+ 			changed = true;
+ 		}
+ 		if (!changed)
+@@ -433,7 +436,7 @@
+ static int proc_sctp_do_rto_min(const struct ctl_table *ctl, int write,
+ 				void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net, sctp.rto_min);
++	struct net *net = sctp_net_from_ctl(ctl, rto_min);
+ 	unsigned int min = *(unsigned int *) ctl->extra1;
+ 	unsigned int max = *(unsigned int *) ctl->extra2;
+ 	struct ctl_table tbl;
+@@ -445,14 +448,14 @@
+ 	if (write)
+ 		tbl.data = &new_value;
+ 	else
+-		tbl.data = &net->sctp.rto_min;
++		tbl.data = &net_sctp(net).rto_min;
+ 
+ 	ret = proc_dointvec(&tbl, write, buffer, lenp, ppos);
+ 	if (write && ret == 0) {
+ 		if (new_value > max || new_value < min)
+ 			return -EINVAL;
+ 
+-		net->sctp.rto_min = new_value;
++		net_sctp(net).rto_min = new_value;
+ 	}
+ 
+ 	return ret;
+@@ -461,7 +464,7 @@
+ static int proc_sctp_do_rto_max(const struct ctl_table *ctl, int write,
+ 				void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net, sctp.rto_max);
++	struct net *net = sctp_net_from_ctl(ctl, rto_max);
+ 	unsigned int min = *(unsigned int *) ctl->extra1;
+ 	unsigned int max = *(unsigned int *) ctl->extra2;
+ 	struct ctl_table tbl;
+@@ -473,14 +476,14 @@
+ 	if (write)
+ 		tbl.data = &new_value;
+ 	else
+-		tbl.data = &net->sctp.rto_max;
++		tbl.data = &net_sctp(net).rto_max;
+ 
+ 	ret = proc_dointvec(&tbl, write, buffer, lenp, ppos);
+ 	if (write && ret == 0) {
+ 		if (new_value > max || new_value < min)
+ 			return -EINVAL;
+ 
+-		net->sctp.rto_max = new_value;
++		net_sctp(net).rto_max = new_value;
+ 	}
+ 
+ 	return ret;
+@@ -499,7 +502,7 @@
+ static int proc_sctp_do_auth(const struct ctl_table *ctl, int write,
+ 			     void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net, sctp.auth_enable);
++	struct net *net = sctp_net_from_ctl(ctl, auth_enable);
+ 	struct ctl_table tbl;
+ 	int new_value, ret;
+ 
+@@ -509,13 +512,13 @@
+ 	if (write)
+ 		tbl.data = &new_value;
+ 	else
+-		tbl.data = &net->sctp.auth_enable;
++		tbl.data = &net_sctp(net).auth_enable;
+ 
+ 	ret = proc_dointvec(&tbl, write, buffer, lenp, ppos);
+ 	if (write && ret == 0) {
+-		struct sock *sk = net->sctp.ctl_sock;
++		struct sock *sk = net_sctp(net).ctl_sock;
+ 
+-		net->sctp.auth_enable = new_value;
++		net_sctp(net).auth_enable = new_value;
+ 		/* Update the value in the control socket */
+ 		lock_sock(sk);
+ 		sctp_sk(sk)->ep->auth_enable = new_value;
+@@ -530,7 +533,7 @@
+ static int proc_sctp_do_udp_port(const struct ctl_table *ctl, int write,
+ 				 void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net, sctp.udp_port);
++	struct net *net = sctp_net_from_ctl(ctl, udp_port);
+ 	unsigned int min = *(unsigned int *)ctl->extra1;
+ 	unsigned int max = *(unsigned int *)ctl->extra2;
+ 	struct ctl_table tbl;
+@@ -542,27 +545,27 @@
+ 	if (write)
+ 		tbl.data = &new_value;
+ 	else
+-		tbl.data = &net->sctp.udp_port;
++		tbl.data = &net_sctp(net).udp_port;
+ 
+ 	ret = proc_dointvec(&tbl, write, buffer, lenp, ppos);
+ 	if (write && ret == 0) {
+-		struct sock *sk = net->sctp.ctl_sock;
++		struct sock *sk = net_sctp(net).ctl_sock;
+ 
+ 		if (new_value > max || new_value < min)
+ 			return -EINVAL;
+ 
+ 		mutex_lock(&sctp_sysctl_mutex);
+-		net->sctp.udp_port = new_value;
++		net_sctp(net).udp_port = new_value;
+ 		sctp_udp_sock_stop(net);
+ 		if (new_value) {
+ 			ret = sctp_udp_sock_start(net);
+ 			if (ret)
+-				net->sctp.udp_port = 0;
++				net_sctp(net).udp_port = 0;
+ 		}
+ 
+ 		/* Update the value in the control socket */
+ 		lock_sock(sk);
+-		sctp_sk(sk)->udp_port = htons(net->sctp.udp_port);
++		sctp_sk(sk)->udp_port = htons(net_sctp(net).udp_port);
+ 		release_sock(sk);
+ 		mutex_unlock(&sctp_sysctl_mutex);
+ 	}
+@@ -573,8 +576,7 @@
+ static int proc_sctp_do_probe_interval(const struct ctl_table *ctl, int write,
+ 				       void *buffer, size_t *lenp, loff_t *ppos)
+ {
+-	struct net *net = container_of(ctl->data, struct net,
+-				       sctp.probe_interval);
++	struct net *net = sctp_net_from_ctl(ctl, probe_interval);
+ 	struct ctl_table tbl;
+ 	int ret, new_value;
+ 
+@@ -584,14 +586,14 @@
+ 	if (write)
+ 		tbl.data = &new_value;
+ 	else
+-		tbl.data = &net->sctp.probe_interval;
++		tbl.data = &net_sctp(net).probe_interval;
+ 
+ 	ret = proc_dointvec(&tbl, write, buffer, lenp, ppos);
+ 	if (write && ret == 0) {
+ 		if (new_value && new_value < SCTP_PROBE_TIMER_MIN)
+ 			return -EINVAL;
+ 
+-		net->sctp.probe_interval = new_value;
++		net_sctp(net).probe_interval = new_value;
+ 	}
+ 
+ 	return ret;
+@@ -608,16 +610,16 @@
+ 		return -ENOMEM;
+ 
+ 	for (i = 0; i < table_size; i++)
+-		table[i].data += (char *)(&net->sctp) - (char *)&init_net.sctp;
++		table[i].data += (char *)(&net_sctp(net)) - (char *)&sctp_sysctl_defaults;
+ 
+-	table[SCTP_RTO_MIN_IDX].extra2 = &net->sctp.rto_max;
+-	table[SCTP_RTO_MAX_IDX].extra1 = &net->sctp.rto_min;
+-	table[SCTP_PF_RETRANS_IDX].extra2 = &net->sctp.ps_retrans;
+-	table[SCTP_PS_RETRANS_IDX].extra1 = &net->sctp.pf_retrans;
++	table[SCTP_RTO_MIN_IDX].extra2 = &net_sctp(net).rto_max;
++	table[SCTP_RTO_MAX_IDX].extra1 = &net_sctp(net).rto_min;
++	table[SCTP_PF_RETRANS_IDX].extra2 = &net_sctp(net).ps_retrans;
++	table[SCTP_PS_RETRANS_IDX].extra1 = &net_sctp(net).pf_retrans;
+ 
+-	net->sctp.sysctl_header = register_net_sysctl_sz(net, "net/sctp",
++	net_sctp(net).sysctl_header = register_net_sysctl_sz(net, "net/sctp",
+ 							 table, table_size);
+-	if (net->sctp.sysctl_header == NULL) {
++	if (net_sctp(net).sysctl_header == NULL) {
+ 		kfree(table);
+ 		return -ENOMEM;
+ 	}
+@@ -628,8 +630,8 @@
+ {
+ 	const struct ctl_table *table;
+ 
+-	table = net->sctp.sysctl_header->ctl_table_arg;
+-	unregister_net_sysctl_table(net->sctp.sysctl_header);
++	table = net_sctp(net).sysctl_header->ctl_table_arg;
++	unregister_net_sysctl_table(net_sctp(net).sysctl_header);
+ 	kfree(table);
+ }
+ 
+diff --git a/net/sctp/transport.c b/net/sctp/transport.c
+--- a/net/sctp/transport.c
++++ b/net/sctp/transport.c
+@@ -55,7 +55,7 @@
+ 	 * given destination transport address, set RTO to the protocol
+ 	 * parameter 'RTO.Initial'.
+ 	 */
+-	peer->rto = msecs_to_jiffies(net->sctp.rto_initial);
++	peer->rto = msecs_to_jiffies(net_sctp(net).rto_initial);
+ 
+ 	peer->last_time_heard = 0;
+ 	peer->last_time_ecne_reduced = jiffies;
+@@ -65,8 +65,8 @@
+ 			    SPP_SACKDELAY_ENABLE;
+ 
+ 	/* Initialize the default path max_retrans.  */
+-	peer->pathmaxrxt  = net->sctp.max_retrans_path;
+-	peer->pf_retrans  = net->sctp.pf_retrans;
++	peer->pathmaxrxt  = net_sctp(net).max_retrans_path;
++	peer->pf_retrans  = net_sctp(net).pf_retrans;
+ 
+ 	INIT_LIST_HEAD(&peer->transmitted);
+ 	INIT_LIST_HEAD(&peer->send_ready);
+@@ -504,10 +504,10 @@
+ 		 * For example, assuming the default value of RTO.Alpha of
+ 		 * 1/8, rto_alpha would be expressed as 3.
+ 		 */
+-		tp->rttvar = tp->rttvar - (tp->rttvar >> net->sctp.rto_beta)
+-			+ (((__u32)abs((__s64)tp->srtt - (__s64)rtt)) >> net->sctp.rto_beta);
+-		tp->srtt = tp->srtt - (tp->srtt >> net->sctp.rto_alpha)
+-			+ (rtt >> net->sctp.rto_alpha);
++		tp->rttvar = tp->rttvar - (tp->rttvar >> net_sctp(net).rto_beta)
++			+ (((__u32)abs((__s64)tp->srtt - (__s64)rtt)) >> net_sctp(net).rto_beta);
++		tp->srtt = tp->srtt - (tp->srtt >> net_sctp(net).rto_alpha)
++			+ (rtt >> net_sctp(net).rto_alpha);
+ 	} else {
+ 		/* 6.3.1 C2) When the first RTT measurement R is made, set
+ 		 * SRTT <- R, RTTVAR <- R/2.
+diff --git a/lib/idr.c b/lib/idr.c
+--- a/lib/idr.c
++++ b/lib/idr.c
+@@ -522,6 +522,7 @@
+ 	return;
+  err:
+ 	xas_unlock_irqrestore(&xas, flags);
++	if (id>500000) return;
+ 	WARN(1, "ida_free called for id=%d which is not allocated.\n", id);
+ }
+ EXPORT_SYMBOL(ida_free);
+diff --git a/mm/mmap.c b/mm/mmap.c
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -982,7 +982,7 @@
+ {
+ 	unsigned long index = addr;
+ 
+-	mmap_assert_locked(mm);
++	//mmap_assert_locked(mm);
+ 	return mt_find(&mm->mm_mt, &index, ULONG_MAX);
+ }
+ EXPORT_SYMBOL(find_vma);
+ 
