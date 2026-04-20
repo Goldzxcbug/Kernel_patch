@@ -1,0 +1,159 @@
+From 5fdd9a9c820fd4e2f6feb5882965c9dfcda2def1 Mon Sep 17 00:00:00 2001
+From: root <root@localhost>
+Date: Tue, 18 Nov 2025 23:59:41 +0800
+Subject: [PATCH] =?UTF-8?q?=E6=B7=BB=E5=8A=A0lxc=E6=94=AF=E6=8C=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ fs/overlayfs/params.c             | 17 +++++++------
+ fs/overlayfs/util.c               |  5 +---
+ include/linux/netdevice.h         |  7 +++---
+ include/linux/sched.h             |  9 ++++---
+ include/net/net_namespace.h       | 15 ++++++++---
+ include/net/netfilter/nf_tables.h |  4 +--
+ kernel/cgroup/cgroup.c            |  5 ++++
+ kernel/module/main.c              |  2 ++
+ kernel/module/version.c           |  2 +-
+ kernel/pid.c                      | 11 ++++++++-
+ net/core/net_namespace.c          | 29 +++++++++++++++++++++-
+ net/netfilter/nf_tables_api.c     |  2 +-
+ net/netfilter/nf_tables_core.c    |  2 +-
+ 13 files changed, 80 insertions(+), 29 deletions(-)
+
+
+diff --git a/fs/overlayfs/params.c b/fs/overlayfs/params.c
+index 75b7e99be7a9d..14c5926d814d5 100644
+--- a/fs/overlayfs/params.c
++++ b/fs/overlayfs/params.c
+@@ -286,18 +286,18 @@ static int ovl_mount_dir_check(struct fs_context *fc, const struct path *path,
+ 			       enum ovl_opt layer, const char *name, bool upper)
+ {
+ 	struct ovl_fs_context *ctx = fc->fs_private;
++	struct ovl_fs *ofs = fc->s_fs_info;
+ 
+ 	if (!d_is_dir(path->dentry))
+ 		return invalfc(fc, "%s is not a directory", name);
+ 
+-	/*
+-	 * Root dentries of case-insensitive capable filesystems might
+-	 * not have the dentry operations set, but still be incompatible
+-	 * with overlayfs.  Check explicitly to prevent post-mount
+-	 * failures.
+-	 */
+-	if (sb_has_encoding(path->mnt->mnt_sb))
+-		return invalfc(fc, "case-insensitive capable filesystem on %s not supported", name);
++	if (sb_has_encoding(path->mnt->mnt_sb)) {
++		ofs->config.userxattr = true;
++		ofs->config.index = false;
++		ofs->config.redirect_mode = OVL_REDIRECT_NOFOLLOW;
++		ofs->config.xino = OVL_XINO_OFF;
++		ofs->config.metacopy = false;
++	}
+ 
+ 	if (ovl_dentry_weird(path->dentry))
+ 		return invalfc(fc, "filesystem on %s not supported", name);
+@@ -716,6 +716,7 @@ int ovl_init_fs_context(struct fs_context *fc)
+ 	ofs->config.nfs_export		= ovl_nfs_export_def;
+ 	ofs->config.xino		= ovl_xino_def();
+ 	ofs->config.metacopy		= ovl_metacopy_def;
++	ofs->config.override_creds	= ovl_override_creds_def;
+ 
+ 	fc->s_fs_info		= ofs;
+ 	fc->fs_private		= ctx;
+diff --git a/fs/overlayfs/util.c b/fs/overlayfs/util.c
+index 6c60141fec4f5..0ae6cc5b9f87c 100644
+--- a/fs/overlayfs/util.c
++++ b/fs/overlayfs/util.c
+@@ -183,10 +183,7 @@ bool ovl_dentry_weird(struct dentry *dentry)
+ 	if (!d_can_lookup(dentry) && !d_is_file(dentry) && !d_is_symlink(dentry))
+ 		return true;
+ 
+-	return dentry->d_flags & (DCACHE_NEED_AUTOMOUNT |
+-				  DCACHE_MANAGE_TRANSIT |
+-				  DCACHE_OP_HASH |
+-				  DCACHE_OP_COMPARE);
++	return dentry->d_flags & (DCACHE_NEED_AUTOMOUNT | DCACHE_MANAGE_TRANSIT);
+ }
+ 
+ enum ovl_path_type ovl_path_type(struct dentry *dentry)
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+index ac4b8b828364a..25ca57c690f4c 100644
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -2170,9 +2170,6 @@ struct net_device {
+ 	const struct iw_handler_def *wireless_handlers;
+ 	struct iw_public_data	*wireless_data;
+ 	const struct ethtool_ops *ethtool_ops;
+-#ifdef CONFIG_NET_L3_MASTER_DEV
+-	const struct l3mdev_ops	*l3mdev_ops;
+-#endif
+ #if IS_ENABLED(CONFIG_IPV6)
+ 	const struct ndisc_ops *ndisc_ops;
+ #endif
+@@ -2450,7 +2447,11 @@ struct net_device {
+ 	ANDROID_KABI_RESERVE(5);
+ 	ANDROID_KABI_RESERVE(6);
+ 	ANDROID_KABI_RESERVE(7);
++#if defined(CONFIG_NET_L3_MASTER_DEV)
++	ANDROID_KABI_USE(8, const struct l3mdev_ops	*l3mdev_ops;);
++#else
+ 	ANDROID_KABI_RESERVE(8);
++#endif
+ };
+ #define to_net_dev(d) container_of(d, struct net_device, dev)
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index dd6b1d58af014..601bb232460cc 100755
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1075,10 +1075,6 @@ struct task_struct {
+ 
+ 	struct nameidata		*nameidata;
+ 
+-#ifdef CONFIG_SYSVIPC
+-	struct sysv_sem			sysvsem;
+-	struct sysv_shm			sysvshm;
+-#endif
+ #ifdef CONFIG_DETECT_HUNG_TASK
+ 	unsigned long			last_switch_count;
+ 	unsigned long			last_switch_time;
+@@ -1520,9 +1516,14 @@ struct task_struct {
+ 	 */
+ 	struct callback_head		l1d_flush_kill;
+ #endif
++#if defined(CONFIG_SYSVIPC)
++	ANDROID_KABI_USE(1, struct sysv_sem sysvsem);
++	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(2); ANDROID_KABI_RESERVE(3), struct sysv_shm sysvshm);
++#else
+ 	ANDROID_KABI_RESERVE(1);
+ 	ANDROID_KABI_RESERVE(2);
+ 	ANDROID_KABI_RESERVE(3);
++#endif
+ 	ANDROID_KABI_RESERVE(4);
+ 	ANDROID_KABI_RESERVE(5);
+ 	ANDROID_KABI_RESERVE(6);
+diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
+index c85c8c25a8485..2e6630a80794d 100644
+--- a/include/net/net_namespace.h
++++ b/include/net/net_namespace.h
+@@ -54,6 +54,13 @@ struct uevent_sock;
+ struct netns_ipvs;
+ struct bpf_prog;
+ 
++#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
++struct net_ext {
++	struct netns_nftables	nft;
++};
++#else
++struct net_ext;
++#endif
+ 
+ #define NETDEV_HASHBITS    8
+ #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
+@@ -146,9 +153,6 @@ struct net {
+ #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+ 	struct netns_ct		ct;
+ #endif
+-#if define
