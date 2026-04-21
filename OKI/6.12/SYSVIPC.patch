@@ -1,32 +1,49 @@
-diff --git a/include/linux/sched.h b/include/linux/sched.h
-index dd6b1d58af014..601bb232460cc 100755
---- a/include/linux/sched.h
-+++ b/include/linux/sched.h
-@@ -1075,10 +1075,6 @@ struct task_struct {
- 
- 	struct nameidata		*nameidata;
- 
--#ifdef CONFIG_SYSVIPC
--	struct sysv_sem			sysvsem;
--	struct sysv_shm			sysvshm;
--#endif
- #ifdef CONFIG_DETECT_HUNG_TASK
- 	unsigned long			last_switch_count;
- 	unsigned long			last_switch_time;
-@@ -1520,9 +1516,14 @@ struct task_struct {
- 	 */
- 	struct callback_head		l1d_flush_kill;
- #endif
-+#if defined(CONFIG_SYSVIPC)
-+	ANDROID_KABI_USE(1, struct sysv_sem sysvsem);
-+	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(2); ANDROID_KABI_RESERVE(3), struct sysv_shm sysvshm);
-+#else
- 	ANDROID_KABI_RESERVE(1);
- 	ANDROID_KABI_RESERVE(2);
- 	ANDROID_KABI_RESERVE(3);
-+#endif
- 	ANDROID_KABI_RESERVE(4);
- 	ANDROID_KABI_RESERVE(5);
- 	ANDROID_KABI_RESERVE(6);
-diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
-index c85c8c25a8485..2e6630a80794d 100644
+From 471827b74eab71548ae68e4d8c2d80f872e94fa8 Mon Sep 17 00:00:00 2001
+From: fatalcoder524 <11532648+fatalcoder524@users.noreply.github.com>
+Date: Mon, 20 Apr 2026 18:18:04 +0530
+Subject: [PATCH] Add sysvipc enable abi fix patch for android16-6.12
+
+---
+ .../fix_sysvipc_kabi_6_7_8_a16-6.12.patch     | 33 +++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+ create mode 100644 common/droidspaces/fix_sysvipc_kabi_6_7_8_a16-6.12.patch
+
+diff --git a/common/droidspaces/fix_sysvipc_kabi_6_7_8_a16-6.12.patch b/common/droidspaces/fix_sysvipc_kabi_6_7_8_a16-6.12.patch
+new file mode 100644
+index 00000000..b5d1ffe6
+--- /dev/null
++++ b/common/droidspaces/fix_sysvipc_kabi_6_7_8_a16-6.12.patch
+@@ -0,0 +1,33 @@
++diff --git a/include/linux/sched.h b/include/linux/sched.h
++index da3984c..9fd9d38 100644
++--- a/include/linux/sched.h
+++++ b/include/linux/sched.h
++@@ -885,6 +885,17 @@ struct task_struct {
++ 	int				normal_prio;
++ 	unsigned int			rt_priority;
++ 
+++#ifdef CONFIG_SYSVIPC
+++	union {
+++		char __kabi_ignored_0;
+++		struct sysv_sem			sysvsem;
+++	}__attribute__((packed));
+++	union {
+++		char __kabi_ignored_1;
+++		struct sysv_shm			sysvshm;
+++	}__attribute__((packed));
+++#endif
+++
++ 	struct sched_entity		se;
++ 	struct sched_rt_entity		rt;
++ 	struct sched_dl_entity		dl;
++@@ -1192,8 +1203,8 @@ struct task_struct {
++ 	struct nameidata		*nameidata;
++ 
++ #ifdef CONFIG_SYSVIPC
++-	struct sysv_sem			sysvsem;
++-	struct sysv_shm			sysvshm;
+++	// struct sysv_sem			sysvsem;
+++	// struct sysv_shm			sysvshm;
++ #endif
++ #ifdef CONFIG_DETECT_HUNG_TASK
++ 	unsigned long			last_switch_count;
