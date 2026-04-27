@@ -1,11 +1,21 @@
-| 内核系列 | 版本 | 目前状态 | 说明 | NTsync 所需补丁 |
-|---------|------|------|------|----------------|
-| **OKI** | 6.12 | ⚠️ 测试中（容器可能不定时重启） | Droidspaces ≥ v5.9.5 | `ntsync_compat_android16-6.12.patch`（仅此一个） |
-| | 6.6 | ✅ 完美运行 | Droidspaces 全版本支持 | `ntsync_base.patch` + `ntsync_compat_android15-6.6.patch` |
-| | 6.1 | ✅ 完美运行 | • Droidspaces ≥ v5.9.5：仅打 `04.use_android_abi_padding_for_sysvipc_task_struct.patch`<br>• 更低版本：打全所有补丁 | `ntsync_base.patch` + `ntsync_compat_android14-6.1.patch` |
-| | 5.15 | ✅ 完美运行 | • Droidspaces ≥ v5.9.5：仅打 `04.use_android_abi_padding_for_sysvipc_task_struct.patch`<br>• 更低版本：打全所有补丁 | ❌ 未测试 |
-| **GKI** | 6.12 | ✅ 完美运行 | Droidspaces 全版本支持 |  `ntsync_compat_android16-6.12.patch`（仅此一个） |
-| | 6.6 | ❓ 未测试 | 未测试 | 未测试 |
+<table>
+  <thead>
+    <tr><th style="width:10%">内核系列</th>
+      <th style="width:8%">版本</th>
+      <th style="width:40%">目前状态</th>
+      <th style="width:32%">说明</th>
+      <th style="width:10%">NTsync 所需补丁</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="4"><b>OKI</b></td><td>6.12</td><td>⚠️ 测试中<br>(容器可能不定时重启)</td><td>Droidspaces ≥ v5.9.5</td><td><code>ntsync_compat_android16-6.12.patch</code>（仅此一个）</td></tr>
+    <tr><td>6.6</td><td>✅ 完美运行</td><td>Droidspaces 全版本支持</td><td><code>ntsync_base.patch</code> + <code>ntsync_compat_android15-6.6.patch</code></td></tr>
+    <tr><td>6.1</td><td>✅ 完美运行</td><td>• Droidspaces ≥ v5.9.5：仅打 <code>04.use_android_abi_padding_for_sysvipc_task_struct.patch</code><br>• 更低版本：打全所有补丁</td><td><code>ntsync_base.patch</code> + <code>ntsync_compat_android14-6.1.patch</code></td></tr>
+    <tr><td>5.15</td><td>✅ 完美运行</td><td>• Droidspaces ≥ v5.9.5：仅打 <code>04.use_android_abi_padding_for_sysvipc_task_struct.patch</code><br>• 更低版本：打全所有补丁</td><td>❌ 未测试</td></tr>
+    <tr><td rowspan="2"><b>GKI</b></td><td>6.12</td><td>✅ 完美运行</td><td>Droidspaces 全版本支持</td><td>仅需打一个补丁（具体名称见发布包）</td></tr>
+    <tr><td>6.6</td><td>❓ 未测试</td><td>未测试</td><td>未测试</td></tr>
+  </tbody>
+</table>
 
 ## Droidspaecs ≥ v5.9.5 所要配置
 ```txt
