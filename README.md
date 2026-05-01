@@ -5,12 +5,16 @@
 | | 6.1 | ✅ 完美运行 | • Droidspaces ≥ v5.9.5：仅打 `04.use_android_abi_padding_for_sysvipc_task_struct.patch`<br>• 更低版本：打全所有补丁 | `ntsync_base.patch` + `ntsync_compat_android14-6.1.patch` |
 | | 5.15 | ✅ 完美运行 | • Droidspaces ≥ v5.9.5：仅打 `04.use_android_abi_padding_for_sysvipc_task_struct.patch`<br>• 更低版本：打全所有补丁 | `ntsync_base.patch` + `ntsync_compat_android13-5.15.patch`|
 | **GKI** | 6.12 | ✅ 完美运行 | Droidspaces 全版本支持 | `ntsync_compat_android16-6.12.patch`（仅此一个）  |
-| | 6.6 | ❓ 未测试 | ❓未测试 | ❓未测试 |
+| | 6.6 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
+| | 6.1 | ❓ 未测试| ❓ 未测试 | ❓未测试 |
+| | 5.15 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
 > `⚠️ 测试中` 代表的是可能出现不定时重启
 > 
 > `✅ 完美运行 ` 代表的是经过多数设备的长期验证，可以稳定运行
 > 
 > `❓ 未测试` 代表的是无设备验证，不确定是否稳定
+>
+> `GKI` 只代表米系设备经过验证,但其他设备应该也可以
 >
 > `💡Droidspaces` 所要文件 [点我跳转](https://cdn.goldzxcbug.top/%E7%A7%BB%E5%8A%A8-Droidspaces-OSS)
 ## Droidspaecs ≥ v5.9.5 所要配置
