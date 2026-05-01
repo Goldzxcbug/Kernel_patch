@@ -71,3 +71,7 @@ CONFIG_NETFILTER_XT_SET=y
 ```txt
 CONFIG_NTSYNC=y
 ```
+
+## Patch 补丁来源
+- [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS/tree/main/Documentation/resources/kernel-patches)
+- [WildKernels](https://github.com/WildKernels/kernel_patches/tree/main/common)
