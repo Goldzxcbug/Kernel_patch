@@ -7,7 +7,7 @@
 | **GKI** | 6.12 | ✅ 完美运行 | Droidspaces 全版本支持 | `ntsync_compat_android16-6.12.patch`（仅此一个）  |
 | | 6.6 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
 | | 6.1 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
-| | 5.15 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
+| | 5.15 | ✅ 完美运行| Droidspaces ≥ v5.9.5<br>• Xiaomi Pad6S pro :使用3-4-5<br>• Xiaomi Pad6 pro :使用1-2-3<br>• Redmi K70 :使用6-7-8<br>• 其他机型自行测试| ❓未测试 |
 > `⚠️ 测试中` 代表的是可能出现不定时重启
 > 
 > `✅ 完美运行 ` 代表的是经过多数设备的长期验证，可以稳定运行
