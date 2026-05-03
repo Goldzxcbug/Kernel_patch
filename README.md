@@ -6,7 +6,7 @@
 | | 5.15 | ✅ 完美运行 | • Droidspaces ≥ v5.9.5：仅打 `04.use_android_abi_padding_for_sysvipc_task_struct.patch`<br>• 更低版本：打全所有补丁 | `ntsync_base.patch` + `ntsync_compat_android13-5.15.patch`|
 | **GKI** | 6.12 | ✅ 完美运行 | Droidspaces 全版本支持 | `ntsync_compat_android16-6.12.patch`（仅此一个）  |
 | | 6.6 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
-| | 6.1 | ❓ 未测试| ❓ 未测试 | ❓未测试 |
+| | 6.1 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
 | | 5.15 | ✅ 完美运行| Droidspaces ≥ v5.9.5 | ❓未测试 |
 > `⚠️ 测试中` 代表的是可能出现不定时重启
 > 
