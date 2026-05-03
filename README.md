@@ -52,14 +52,14 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>暂无</td>
+      <td>• Xiaomi Pad 8 Pro</td>
     </tr>
     <tr>
       <td align="center">6.1</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>暂无</td>
+      <td>• Xiaomi 14</td>
     </tr>
     <tr>
       <td align="center">5.15</td>
