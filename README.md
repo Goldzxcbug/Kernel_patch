@@ -16,28 +16,28 @@
       <td align="center">⚠️ 测试中</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td><code>仅打 android16-6.12.patch</code></td>
-      <td>• OnePlus 15</td>
+      <td>• 一加 15</td>
     </tr>
     <tr>
       <td align="center">6.6</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces 全版本支持</td>
       <td><code>ntsync_base.patch</code> + <code>android15-6.6.patch</code></td>
-      <td>• OnePlus Pad 2 Pro<br>• OnePlus 13<br>• OnePlus Ace 6<br>• OnePlus Ace 5 Pro<br>• OnePlus 13T</td>
+      <td>• 一加 Pad 2 Pro<br>• 一加 13<br>• 一加 Ace 6<br>• 一加 Ace 5 Pro<br>• 一加 13T</td>
     </tr>
     <tr>
       <td align="center">6.1</td>
       <td align="center">✅ 完美运行</td>
       <td>• Droidspaces ≥ v5.9.5：仅打 <code>04.sysvipc_task_struct.patch</code> 补丁<br>• 更低版本：打全所有补丁</td>
       <td><code>ntsync_base.patch</code> + <code>android14-6.1.patch</code></td>
-      <td>• OnePlus Ace 3 Pro<br>• OnePlus 12<br>• OnePlus Pad Pro<br>• Realme GT 5 Pro</td>
+      <td>• 一加 Ace 3 Pro<br>• 一加 12<br>• 一加 Pad Pro<br>• 真我 GT 5 Pro</td>
     </tr>
     <tr>
       <td align="center">5.15</td>
       <td align="center">✅ 完美运行</td>
       <td>• Droidspaces ≥ v5.9.5：仅打 <code>04.sysvipc_task_struct.patch</code> 补丁<br>• 更低版本：打全所有补丁</td>
       <td><code>ntsync_base.patch</code> + <code>android13-5.15.patch</code></td>
-      <td>• OnePlus Ace 3</td>
+      <td>• 一加 Ace 3</td>
     </tr>
     <tr>
       <td rowspan="5" align="center"><b>GKI</b></td>
@@ -45,35 +45,35 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces 全版本支持</td>
       <td><code>仅打 android16-6.12.patch</code></td>
-      <td>• Redmi K90 Pro Max<br>• Xiaomi 17 Pro Max<br>• 红魔 11</td>
+      <td>• 红米 K90 Pro Max<br>• 小米 17 Pro Max<br>• 红魔 11</td>
     </tr>
     <tr>
       <td align="center">6.6</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>• Xiaomi Pad 8 Pro</td>
+      <td>• 小米 Pad 8 Pro</td>
     </tr>
     <tr>
       <td align="center">6.1</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>• Xiaomi 14</td>
+      <td>• 小米 14</td>
     </tr>
     <tr>
       <td align="center">5.15</td>
       <td align="center">✅ 完美运行</td>
-      <td>Droidspaces ≥ v5.9.5 💥特殊<br>• Xiaomi Pad6S pro :使用3-4-5<br>• Redmi K70 :使用6-7-8<br>• 其他机型自行测试</td>
+      <td>Droidspaces ≥ v5.9.5 💥特殊<br>• 小米 Pad6S pro :使用3-4-5<br>• 红米 K70 :使用6-7-8<br>• 其他机型自行测试</td>
       <td align="center">❓未测试</td>
-      <td>• Xiaomi Pad6S Pro<br>• Redmi K70</td>
+      <td>• 小米 Pad6S Pro<br>• 红米 K70</td>
     </tr>
     <tr>
       <td align="center">5.10</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>• Xiaomi Pad 6 Max<br>• Xiaomi Pad 6 Pro</td>
+      <td>• 小米 Pad 6 Max<br>• 小米 Pad 6 Pro</td>
     </tr>
   </tbody>
 </table>
