@@ -59,7 +59,7 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
       <td align="center">❓未测试</td>
-      <td>• 小米 14</td>
+      <td>• 小米 14<br>• 红魔9SPro+</td>
     </tr>
     <tr>
       <td align="center">5.15</td>
