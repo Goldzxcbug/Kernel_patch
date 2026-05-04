@@ -23,7 +23,7 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces 全版本支持</td>
       <td><code>ntsync_base.patch</code> + <code>android15-6.6.patch</code></td>
-      <td>• OnePlus Pad 2 Pro<br>• OnePlus 13<br>• OnePlus Ace 6<br>• OnePlus Ace 5 Pro<br>• OnePlus 13T<br>• OnePlus Ace 5 Ultra</td>
+      <td>• OnePlus Pad 2 Pro<br>• OnePlus 13<br>• OnePlus Ace 6<br>• OnePlus Ace 5 Pro<br>• OnePlus 13T</td>
     </tr>
     <tr>
       <td align="center">6.1</td>
