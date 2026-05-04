@@ -23,7 +23,7 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces 全版本支持</td>
       <td><code>ntsync_base.patch</code> + <code>android15-6.6.patch</code></td>
-      <td>• 一加 Pad 2 Pro<br>• 一加 13<br>• 一加 Ace 6<br>• 一加 Ace 5 Pro<br>• 一加 13T<br>• 一加 Ace5至尊版</td>
+      <td>• 一加 Pad 2 Pro<br>• 一加 13<br>• 一加 Ace 6<br>• 一加 Ace 5 Pro<br>• 一加 13T<br>• 一加 Ace5至尊版(⚠️ 测试中)</td>
     </tr>
     <tr>
       <td align="center">6.1</td>
