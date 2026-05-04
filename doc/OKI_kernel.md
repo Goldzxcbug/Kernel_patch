@@ -42,7 +42,7 @@
 
 ![第三步](./Image/OKI_2.jpg)
 
-第四步,以下文本为事例文本
+第四步,下面文本为例子(可以继续加NTsync补丁和配置)
 
 ```yml
       - name: 注入DroidSpaces内核配置
