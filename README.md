@@ -58,8 +58,8 @@
       <td align="center">6.1</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
-      <td align="center">❓未测试</td>
-      <td>• 小米 14<br>• 红魔9SPro+</td>
+      <td><code>ntsync_base.patch</code> + <code>android14-6.1.patch.patch</code></td>
+      <td>• 小米 14<br>• 红魔9SPro+<br>• 红魔9Pro</td>
     </tr>
     <tr>
       <td align="center">5.15</td>
