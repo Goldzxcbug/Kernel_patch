@@ -45,7 +45,7 @@
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces 全版本支持</td>
       <td><code>仅打 android16-6.12.patch</code></td>
-      <td>• 红米 K90 ProMax<br>• 小米 17 Pro Max<br>• 红魔 11</td>
+      <td>• 红米 K90 ProMax<br>• 小米 17 Pro Max<br>• 红魔 11<br>• 荣耀magicPad 3Pro</td>
     </tr>
     <tr>
       <td align="center">6.6</td>
