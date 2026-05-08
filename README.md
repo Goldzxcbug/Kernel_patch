@@ -72,8 +72,8 @@
       <td align="center">5.10</td>
       <td align="center">✅ 完美运行</td>
       <td>Droidspaces ≥ v5.9.5</td>
-      <td align="center">❓未测试</td>
-      <td>• 小米 Pad 6 Max<br>• 小米 Pad 6 Pro</td>
+       <td><code>ntsync_base.patch</code> + <code>android12-5.10.patch</code></td>
+      <td>• 小米 Pad 6 Max<br>• 小米 Pad 6 Pro<br>• 红米K50 Ultra</td>
     </tr>
   </tbody>
 </table>
